@@ -1,6 +1,8 @@
-# Data schema (v0.3 — implemented)
+# Data schema (v0.3 — implemented, v0.4 ingestion)
 
 This document matches the SQLAlchemy models in `kalshi_no_carry.db.schema`. Tables are created via `create_all_tables()` (see `scripts/init_db.py`). **Alembic** is not wired yet; schema evolution will add versioned migrations when needed.
+
+**v0.4 collectors** (`collect_events`, `collect_markets`, `collect_orderbooks_*`) populate `raw_events`, `raw_markets`, and `raw_orderbook_snapshots` using `KalshiClient` plus `db.repositories`, and append rows to **`api_fetch_log`** for observability (endpoint label, safe `params_json`, `row_count`, `success`).
 
 ## Design principles
 

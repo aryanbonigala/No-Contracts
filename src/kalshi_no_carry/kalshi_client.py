@@ -169,6 +169,61 @@ class KalshiClient:
         """GET /exchange/status (public)."""
         return self.request("GET", "/exchange/status")
 
+    def get_events(
+        self,
+        *,
+        limit: int = 100,
+        cursor: str | None = None,
+        status: str | None = None,
+        series_ticker: str | None = None,
+        authenticated: bool = False,
+        **extra_query: Any,
+    ) -> dict[str, Any]:
+        """GET /events (paginated; public). Kalshi allows limit up to 200."""
+        cap = max(1, min(int(limit), 200))
+        params: dict[str, Any] = {"limit": cap}
+        if cursor:
+            params["cursor"] = cursor
+        if status is not None:
+            params["status"] = status
+        if series_ticker is not None:
+            params["series_ticker"] = series_ticker
+        for key, value in extra_query.items():
+            if value is not None:
+                params[key] = value
+        return self.request("GET", "/events", params=params, authenticated=authenticated)
+
+    def iter_events(
+        self,
+        *,
+        limit: int = 100,
+        max_pages: int | None = None,
+        authenticated: bool = False,
+        **filters: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield events from paginated /events until cursor is empty or ``max_pages`` is reached."""
+        cursor: str | None = None
+        pages = 0
+        while True:
+            if max_pages is not None and pages >= max_pages:
+                break
+            page = self.get_events(
+                limit=limit,
+                cursor=cursor,
+                authenticated=authenticated,
+                **filters,
+            )
+            events = page.get("events") or []
+            if not isinstance(events, list):
+                raise TypeError("events page must contain a list under 'events'")
+            for row in events:
+                if isinstance(row, dict):
+                    yield row
+            cursor = page.get("cursor")
+            if not cursor:
+                break
+            pages += 1
+
     def get_markets(
         self,
         *,

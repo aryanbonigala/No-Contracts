@@ -1,4 +1,4 @@
-"""Read-only collector: Kalshi markets → ``raw_markets`` + ``api_fetch_log``."""
+"""Read-only collector: Kalshi events → ``raw_events`` + ``api_fetch_log``."""
 
 from __future__ import annotations
 
@@ -8,26 +8,25 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
 from kalshi_no_carry.collectors.common import CollectorSummary, safe_error_message, utc_now
-from kalshi_no_carry.db.repositories import record_api_fetch, upsert_market
+from kalshi_no_carry.db.repositories import record_api_fetch, upsert_event
 
 
-def collect_markets(
+def collect_events(
     client: Any,
     engine: Engine,
     *,
     limit: int = 100,
     max_pages: int | None = None,
     status: str | None = None,
-    event_ticker: str | None = None,
     series_ticker: str | None = None,
     source: str = "kalshi",
 ) -> CollectorSummary:
     """
-    Paginate ``GET /markets``, upsert each market, and log each page fetch.
+    Paginate ``GET /events``, upsert each event, and log each page fetch.
 
-    ``client`` must provide ``get_markets(limit=..., cursor=..., ...)``.
+    ``client`` must provide ``get_events(limit=..., cursor=..., status=..., series_ticker=...)``.
     """
-    summary = CollectorSummary(name="collect_markets", started_at=utc_now())
+    summary = CollectorSummary(name="collect_events", started_at=utc_now())
     Session = sessionmaker(bind=engine, expire_on_commit=False, future=True)
     cursor: str | None = None
     pages = 0
@@ -37,11 +36,10 @@ def collect_markets(
                 break
             with Session() as session:
                 try:
-                    page = client.get_markets(
+                    page = client.get_events(
                         limit=limit,
                         cursor=cursor,
                         status=status,
-                        event_ticker=event_ticker,
                         series_ticker=series_ticker,
                     )
                 except Exception as exc:
@@ -49,14 +47,14 @@ def collect_markets(
                     summary.errors.append(safe_error_message(exc))
                     record_api_fetch(
                         session,
-                        endpoint="/markets",
+                        endpoint="/events",
                         params_json={
                             "limit": limit,
                             "status": status,
-                            "event_ticker": event_ticker,
                             "series_ticker": series_ticker,
                             "page": pages,
                         },
+                        status_code=None,
                         success=False,
                         error_message=safe_error_message(exc),
                         row_count=0,
@@ -65,40 +63,39 @@ def collect_markets(
                     session.commit()
                     break
 
-                markets = page.get("markets") or []
-                if not isinstance(markets, list):
-                    markets = []
+                events = page.get("events") or []
+                if not isinstance(events, list):
+                    events = []
 
-                written = 0
-                for m in markets:
-                    if not isinstance(m, dict):
+                seen = 0
+                for ev in events:
+                    if not isinstance(ev, dict):
                         continue
                     try:
-                        upsert_market(session, m)
+                        upsert_event(session, ev)
                     except ValueError:
                         continue
-                    written += 1
-                    tid = str(m.get("ticker") or "").strip()
+                    seen += 1
+                    tid = str(ev.get("event_ticker") or ev.get("ticker") or "").strip()
                     if tid:
                         summary.ids_collected.append(tid)
 
                 summary.fetched_pages += 1
-                summary.records_seen += len(markets)
-                summary.records_written += written
+                summary.records_seen += len(events)
+                summary.records_written += seen
 
                 record_api_fetch(
                     session,
-                    endpoint="/markets",
+                    endpoint="/events",
                     params_json={
                         "limit": limit,
                         "status": status,
-                        "event_ticker": event_ticker,
                         "series_ticker": series_ticker,
                         "page": pages,
                     },
                     status_code=200,
                     success=True,
-                    row_count=len(markets),
+                    row_count=len(events),
                     source=source,
                 )
                 session.commit()

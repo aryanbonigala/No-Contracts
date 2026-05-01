@@ -34,6 +34,48 @@ def test_client_joins_base_url_and_path() -> None:
     assert calls == ["https://api.elections.kalshi.com/trade-api/v2/markets?limit=2"]
 
 
+def test_iter_events_pagination() -> None:
+    bodies = iter(
+        [
+            {"events": [{"event_ticker": "E1"}], "cursor": "next"},
+            {"events": [{"event_ticker": "E2"}], "cursor": ""},
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=next(bodies))
+
+    transport = httpx.MockTransport(handler)
+    client = KalshiClient(
+        "https://api.elections.kalshi.com/trade-api/v2",
+        http_client=httpx.Client(transport=transport),
+    )
+    try:
+        out = list(client.iter_events(limit=5, max_pages=3))
+    finally:
+        client.close()
+    assert [e["event_ticker"] for e in out] == ["E1", "E2"]
+
+
+def test_get_events_caps_limit_at_200() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"events": [], "cursor": ""})
+
+    transport = httpx.MockTransport(handler)
+    client = KalshiClient(
+        "https://api.elections.kalshi.com/trade-api/v2",
+        http_client=httpx.Client(transport=transport),
+    )
+    try:
+        client.get_events(limit=5000)
+    finally:
+        client.close()
+    assert "limit=200" in seen[0]
+
+
 def test_accepts_path_with_or_without_leading_slash() -> None:
     urls: list[str] = []
 

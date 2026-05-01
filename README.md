@@ -1,98 +1,80 @@
-# Kalshi NO Carry (v0.3 — Postgres persistence layer)
+# Kalshi NO Carry (v0.4 — read-only collectors)
 
 Production-oriented **research** codebase for testing a statistical thesis on Kalshi binary markets:
 
 **Thesis (informal):** there may be edge in buying high-confidence **NO** contracts when the market-implied NO price is below the “true” NO probability after adjusting for fees, spread, ambiguity risk, and correlated event risk.
 
-This repository is **v0.3** (`Kalshi_NO_Carry_v0.3_PostgresPersistenceLayer`): it keeps the **v0.2** read-only **`KalshiClient`**, and adds a **SQLAlchemy** schema plus **repository** helpers for Postgres (SQLite in unit tests). **Collectors are not implemented yet** — nothing automatically fetches Kalshi into the database in this version.
+This repository is **v0.4** (`Kalshi_NO_Carry_v0.4_ReadOnlyCollectors`). It layers **read-only data collectors** on top of **v0.2** `KalshiClient` and **v0.3** SQLAlchemy persistence. Collectors persist **raw events**, **raw markets**, **append-only orderbook snapshots** (with derived executable quotes), and **API fetch logs**. They do **not** trade, place orders, or touch portfolio endpoints.
 
 ## Safety / scope
 
-- **Read-only API usage:** `KalshiClient` has no order placement; collectors will remain read-only when added.
-- **Secrets:** never commit `.env`, PEM keys, API keys, or database passwords. `scripts/check_env.py` prints only **redacted** database URL forms.
+- **Read-only:** all ingestion uses public `GET` (and optional authenticated read) paths only.
+- **Secrets:** never commit `.env`, keys, or passwords. Scripts print **summary JSON** from `to_public_dict()` only — no raw `DATABASE_URL`, no API keys.
 
 ## Layout
 
-- `src/kalshi_no_carry/` — `kalshi_client.py`, `database.py`, `db/schema.py`, `db/repositories.py`
-- `scripts/` — `init_db.py`, `db_healthcheck.py`, `check_env.py`, `run_market_snapshot.py`, …
-- `tests/` — pytest (default suite uses in-memory SQLite; **no live Postgres required**)
-- `docs/` — architecture, **implemented** data schema, research rules
+- `src/kalshi_no_carry/collectors/` — `events.py`, `markets.py`, `orderbooks.py`, `common.py`
+- `src/kalshi_no_carry/db/` — schema + repositories
+- `scripts/` — `collect_markets.py`, `collect_orderbooks.py`, `collect_snapshot.py`, `init_db.py`, …
+- `tests/` — fakes + SQLite in-memory (**no live Kalshi or Postgres required** for default pytest)
 
 ## Install
 
-From the repo root (`kalshi-no-carry/`):
-
 ```bash
+cd kalshi-no-carry
 python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Runtime dependencies include **SQLAlchemy** and **psycopg** for PostgreSQL drivers.
-
 ## Configuration
 
-Copy `.env.example` to `.env`. See `scripts/check_env.py` for a safe summary.
+- **Kalshi:** `KALSHI_BASE_URL` (full `…/trade-api/v2`), optional auth env vars — see `.env.example`.
+- **Database:** **`DATABASE_URL` is required for collector scripts** (Postgres recommended on a VM; `scripts/check_env.py` shows a **redacted** preview).
 
-### Kalshi (unchanged from v0.2)
-
-- `KALSHI_BASE_URL=https://api.elections.kalshi.com/trade-api/v2` (full path required)
-- Optional: `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH` for authenticated reads
-
-### Database (optional until you initialize tables)
-
-```env
-DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DATABASE_NAME
-```
-
-`DATABASE_URL` may be omitted at import time; scripts that need a DB exit with a clear error if it is missing.
-
-For **optional** integration tests against a real Postgres:
-
-```env
-RUN_DB_INTEGRATION_TESTS=1
-DATABASE_URL=postgresql://...
-```
-
-## Initialize database (DDL)
-
-Requires `DATABASE_URL`:
+Initialize schema once (optional; scripts can pass `--create-tables`):
 
 ```bash
 python scripts/init_db.py
 ```
 
-Creates all tables from `Base.metadata` (idempotent if tables already exist). **Does not print credentials.**
+## Run collectors (requires `DATABASE_URL` + network to Kalshi)
 
-## Database healthcheck
+Events + markets (one combined CLI):
 
 ```bash
-python scripts/db_healthcheck.py
+python scripts/collect_markets.py --create-tables --limit 100 --max-pages 1
 ```
 
-Runs `SELECT 1` on the configured database.
+Orderbooks for explicit tickers or for currently open markets:
 
-## Run tests
+```bash
+python scripts/collect_orderbooks.py --ticker SOME-TICKER
+python scripts/collect_orderbooks.py --active-markets --limit 50 --max-pages 1
+```
+
+End-to-end smoke (exchange status optional, one page events/markets, first N market orderbooks):
+
+```bash
+python scripts/collect_snapshot.py --create-tables --limit 20 --orderbook-count 10
+```
+
+## Tests
+
+Offline-only default suite (mocks + SQLite):
 
 ```bash
 pytest
 ```
 
-Default tests use **SQLite in-memory** (no Docker Postgres needed). One integration test is **skipped** unless `RUN_DB_INTEGRATION_TESTS=1` and `DATABASE_URL` are set.
-
-## Market snapshot (smoke test, no DB)
-
-```bash
-python scripts/run_market_snapshot.py
-python scripts/run_market_snapshot.py --ticker YOUR-MARKET-TICKER
-```
+Optional Postgres smoke: set `RUN_DB_INTEGRATION_TESTS=1` and `DATABASE_URL` (unchanged from v0.3).
 
 ## Documentation
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — v0.3 database + client boundaries
-- [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) — table and column reference
-- [`docs/RESEARCH_RULES.md`](docs/RESEARCH_RULES.md) — methodological guardrails
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — collector + persistence flow
+- [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) — tables and how collectors fill them
+- [`docs/RESEARCH_RULES.md`](docs/RESEARCH_RULES.md) — research guardrails
 
-## Deployment note (DigitalOcean VM)
+## Deferred (not in v0.4)
 
-Use a managed Postgres instance (or container) and inject `DATABASE_URL` via environment — do not bake secrets into images.
+Event clustering, persisting train/validation/test splits, feature engineering, NO-carry backtester, order execution.
