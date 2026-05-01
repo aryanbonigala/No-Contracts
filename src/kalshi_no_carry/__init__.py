@@ -1,3 +1,3 @@
-"""Kalshi NO Carry research package (v0.1 scaffold)."""
+"""Kalshi NO Carry research package (v0.3 persistence + read-only client)."""
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"

@@ -1,77 +1,115 @@
-# Data schema plan (not implemented in v0.1)
+# Data schema (v0.3 — implemented)
 
-This document describes **intended** Postgres entities once ingestion and migrations exist. Table names and columns may change; v0.1 does not create tables.
+This document matches the SQLAlchemy models in `kalshi_no_carry.db.schema`. Tables are created via `create_all_tables()` (see `scripts/init_db.py`). **Alembic** is not wired yet; schema evolution will add versioned migrations when needed.
 
 ## Design principles
 
-- **Immutable raw payloads** stored alongside normalized rows (JSON/BLOB column or object storage pointer).
-- **Provenance**: `ingested_at`, source request identifiers, and API version.
-- **Time in UTC** with timezone-aware types (`timestamptz`).
-- **No secrets** in rows (API keys stay in env / vault).
+- **Raw JSON provenance** (`raw_json`) stores the latest API payload (or a faithful copy) next to denormalized columns for indexing and quick filters.
+- **Timestamps** use `DateTime(timezone=True)` (PostgreSQL `timestamptz`; SQLite stores UTC without tz — ORM tests normalize).
+- **No secrets** in tables (credentials stay in env / vault).
+- **Idempotent upserts** in `kalshi_no_carry.db.repositories` preserve `first_seen_at` and refresh `last_seen_at` + `raw_json`.
+- **Splits:** `event_clusters` + `strategy_splits` support chronological **60/20/20** assignments at **cluster** granularity (see `RESEARCH_RULES.md`). The **test** holdout must not be tuned against after assignment.
 
-## Core entities (planned)
+## JSON columns
 
-### `markets`
+Portable `JSON` with PostgreSQL `JSONB` variant for efficient storage and indexing on Postgres:
 
-- `market_id` (text, PK)
-- `event_ticker`, `market_ticker` (text)
-- `open_time`, `close_time` (`timestamptz`, nullable)
-- `status` (text / enum)
-- `rules_summary` or `rules_hash` (text) — pointer to full rules text
-- `raw_payload` (jsonb)
-- `ingested_at` (`timestamptz`)
+```text
+JSON().with_variant(JSONB(), "postgresql")
+```
 
-### `orderbook_snapshots`
+## Tables
 
-- `id` (bigserial PK)
-- `market_id` (FK → `markets.market_id`)
-- `observed_at` (`timestamptz`) — wall clock when snapshot was taken
-- `sequence` or `api_cursor` (bigint/text, nullable)
-- `bids` / `asks` (jsonb) — price levels for YES/NO legs as ingested
-- `raw_payload` (jsonb)
+### `api_fetch_log`
 
-### `trades`
+Audit trail for ingestion / HTTP fetches (used by future collectors).
 
-- `id` (bigserial PK)
-- `market_id` (FK)
-- `trade_time` (`timestamptz`)
-- `price_cents`, `contracts`, `side` (int/smallint/text)
-- `raw_payload` (jsonb)
+| Column | Notes |
+|--------|--------|
+| `id` | Integer PK, autoincrement (portable across SQLite tests and Postgres). |
+| `fetched_at` | When the fetch finished (UTC), indexed. |
+| `endpoint` | Logical path or label, e.g. `/markets`. |
+| `params_json` | Query/body params as JSON (nullable). |
+| `status_code` | HTTP status when applicable. |
+| `success` | Boolean outcome. |
+| `error_message` | Error text (nullable). |
+| `row_count` | Optional count of rows parsed. |
+| `source` | Optional pipeline label. |
 
-### `candles` (if sourced)
+### `raw_events`
 
-- `market_id`, `interval`, `period_start` (PK composite)
-- OHLCV numeric columns
-- `raw_payload` (jsonb)
+Kalshi **event** objects (ticker-level).
 
-### `settlements`
+| Column | Notes |
+|--------|--------|
+| `event_ticker` | Primary key. |
+| `series_ticker`, `title`, `category`, `status` | Denormalized; indexed where useful. |
+| `raw_json` | Latest raw event document. |
+| `first_seen_at`, `last_seen_at`, `fetched_at` | Provenance timestamps. |
 
-- `market_id` (PK or unique)
-- `settled_at` (`timestamptz`)
-- `outcome` (text / smallint — YES/NO/void per Kalshi encoding)
-- `raw_payload` (jsonb)
+### `raw_markets`
+
+Kalshi **market** rows (`GET /markets` style objects).
+
+Denormalized price fields are **integer cents** parsed from Kalshi dollar strings when present (`yes_bid_dollars` → `yes_bid_cents`, etc.). `volume` / `open_interest` approximate fixed-point counts as integers.
+
+| Column | Notes |
+|--------|--------|
+| `market_ticker` | Primary key (`ticker` in API). |
+| `event_ticker`, `series_ticker`, … | Filters for research. |
+| `open_time`, `close_time`, `expiration_time`, `settlement_time` | Parsed from ISO fields when present. |
+| `result` | Settlement outcome string when set. |
+| `raw_json` | Full latest market JSON. |
+| `first_seen_at`, `last_seen_at`, `fetched_at` | Provenance. |
+
+### `raw_orderbook_snapshots`
+
+Time series of **order book** snapshots for reconstructing **executable** prices.
+
+Kalshi returns YES and NO **bids** only. Denormalized columns store best bid/ask **cents** and **sizes** (integers) aligned with `derive_executable_prices_from_orderbook()` (asks synthesized as \(100 - \text{opposite bid}\) cents).
+
+| Column | Notes |
+|--------|--------|
+| `id` | Integer PK, autoincrement. |
+| `market_ticker` | Indexed; composite index with `fetched_at`. |
+| `fetched_at` | Observation time (UTC), indexed. |
+| `best_*_cents`, `best_*_size` | Best executable top-of-book view. |
+| `raw_json` | Full orderbook JSON from the API. |
+
+**Why snapshots matter:** backtests must use **executable** bid/ask assumptions, not last trade, per `RESEARCH_RULES.md`. Storing each pull’s raw book preserves auditability; denormalized bests speed queries.
 
 ### `event_clusters`
 
-- `cluster_id` (text/uuid PK)
-- `reference_time_utc` (`timestamptz`) — must align with split rules in `RESEARCH_RULES.md`
-- `metadata` (jsonb) — human label, keywords, risk notes
-- Optional: linkage table `cluster_markets(cluster_id, market_id)`
+Groups markets/events for **correlation-aware** research and **splits**.
 
-### `research_splits`
+| Column | Notes |
+|--------|--------|
+| `cluster_id` | Primary key (stable string / UUID as text). |
+| `cluster_key` | Optional hash/key for clustering version. |
+| `event_ticker`, `series_ticker`, `category` | Optional linkage. |
+| `representative_title` | Human-readable label. |
+| `close_time` | Optional reference time for chronological ordering. |
+| `raw_json` | Optional clustering metadata blob. |
+| `created_at`, `updated_at` | Maintained by repositories. |
 
-Materialized split assignments (optional convenience table):
+### `strategy_splits`
 
-- `cluster_id` (PK, FK)
-- `split_name` (`train` | `validation` | `test`)
-- `generated_at`, `split_rules_version`
+**One row per cluster** — assignment into train / validation / test.
 
-## Indexes (planned)
+| Column | Notes |
+|--------|--------|
+| `cluster_id` | PK, FK → `event_clusters.cluster_id` (cascade delete). |
+| `split_name` | One of: `train`, `validation`, `test` (enforced in Python). |
+| `split_version` | Version string, e.g. rule + data cutoff (indexed). |
+| `assigned_at` | When the split row was written. |
+| `notes` | Optional. |
 
-- `orderbook_snapshots(market_id, observed_at)`
-- `trades(market_id, trade_time)`
-- `markets(event_ticker, open_time)`
+The **final test** fraction must remain **untouched** after assignment for honest reporting (`RESEARCH_RULES.md`).
+
+## Indexes
+
+- `raw_orderbook_snapshots`: `(market_ticker, fetched_at)` composite; individual indexes on `fetched_at` and `market_ticker` as defined in the model.
 
 ## Migrations
 
-Future work: introduce Alembic (or equivalent) under something like `migrations/` and keep DDL out of application import side-effects.
+v0.3 uses `Base.metadata.create_all()`. Future work: add Alembic with autogenerate against this metadata for zero-drift production deploys.

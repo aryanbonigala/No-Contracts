@@ -1,24 +1,22 @@
-# Kalshi NO Carry (v0.1 — project scaffold)
+# Kalshi NO Carry (v0.3 — Postgres persistence layer)
 
 Production-oriented **research** codebase for testing a statistical thesis on Kalshi binary markets:
 
 **Thesis (informal):** there may be edge in buying high-confidence **NO** contracts when the market-implied NO price is below the “true” NO probability after adjusting for fees, spread, ambiguity risk, and correlated event risk.
 
-This repository is **v0.1** (`Kalshi_NO_Carry_v0.1_ProjectScaffold`): structure, configuration, logging, fee estimates, chronological train/validation/test splitting by event cluster, documentation, and CLI entrypoints — **not** a full data pipeline, API client, database schema, or backtest engine yet.
+This repository is **v0.3** (`Kalshi_NO_Carry_v0.3_PostgresPersistenceLayer`): it keeps the **v0.2** read-only **`KalshiClient`**, and adds a **SQLAlchemy** schema plus **repository** helpers for Postgres (SQLite in unit tests). **Collectors are not implemented yet** — nothing automatically fetches Kalshi into the database in this version.
 
-## Non-goals (this version)
+## Safety / scope
 
-- No live trading or order placement.
-- No hardcoded API keys, private paths, or committed secrets.
-- No full Kalshi API implementation or collectors.
-- No Postgres schema migrations or persistence layer.
+- **Read-only API usage:** `KalshiClient` has no order placement; collectors will remain read-only when added.
+- **Secrets:** never commit `.env`, PEM keys, API keys, or database passwords. `scripts/check_env.py` prints only **redacted** database URL forms.
 
 ## Layout
 
-- `src/kalshi_no_carry/` — application package
-- `scripts/` — thin CLI wrappers for future workflows
-- `tests/` — pytest suite
-- `docs/` — architecture, data plan, and research rules
+- `src/kalshi_no_carry/` — `kalshi_client.py`, `database.py`, `db/schema.py`, `db/repositories.py`
+- `scripts/` — `init_db.py`, `db_healthcheck.py`, `check_env.py`, `run_market_snapshot.py`, …
+- `tests/` — pytest (default suite uses in-memory SQLite; **no live Postgres required**)
+- `docs/` — architecture, **implemented** data schema, research rules
 
 ## Install
 
@@ -30,22 +28,71 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 ```
 
+Runtime dependencies include **SQLAlchemy** and **psycopg** for PostgreSQL drivers.
+
 ## Configuration
 
-Copy `.env.example` to `.env` and set variables appropriate to your environment. The app reads settings via `kalshi_no_carry.config`; see `scripts/check_env.py` for a quick sanity check.
+Copy `.env.example` to `.env`. See `scripts/check_env.py` for a safe summary.
 
-## Tests
+### Kalshi (unchanged from v0.2)
+
+- `KALSHI_BASE_URL=https://api.elections.kalshi.com/trade-api/v2` (full path required)
+- Optional: `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH` for authenticated reads
+
+### Database (optional until you initialize tables)
+
+```env
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DATABASE_NAME
+```
+
+`DATABASE_URL` may be omitted at import time; scripts that need a DB exit with a clear error if it is missing.
+
+For **optional** integration tests against a real Postgres:
+
+```env
+RUN_DB_INTEGRATION_TESTS=1
+DATABASE_URL=postgresql://...
+```
+
+## Initialize database (DDL)
+
+Requires `DATABASE_URL`:
+
+```bash
+python scripts/init_db.py
+```
+
+Creates all tables from `Base.metadata` (idempotent if tables already exist). **Does not print credentials.**
+
+## Database healthcheck
+
+```bash
+python scripts/db_healthcheck.py
+```
+
+Runs `SELECT 1` on the configured database.
+
+## Run tests
 
 ```bash
 pytest
 ```
 
+Default tests use **SQLite in-memory** (no Docker Postgres needed). One integration test is **skipped** unless `RUN_DB_INTEGRATION_TESTS=1` and `DATABASE_URL` are set.
+
+## Market snapshot (smoke test, no DB)
+
+```bash
+python scripts/run_market_snapshot.py
+python scripts/run_market_snapshot.py --ticker YOUR-MARKET-TICKER
+```
+
 ## Documentation
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system overview and module boundaries
-- [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) — planned persistence and entities (not implemented yet)
-- [`docs/RESEARCH_RULES.md`](docs/RESEARCH_RULES.md) — rules to avoid leakage and keep research sound
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — v0.3 database + client boundaries
+- [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) — table and column reference
+- [`docs/RESEARCH_RULES.md`](docs/RESEARCH_RULES.md) — methodological guardrails
 
 ## Deployment note (DigitalOcean VM)
 
-The design assumes a standard Linux VM with Python 3.10+, optional Postgres (managed or co-located), and environment variables injected via your orchestration or shell — not baked into the image.
+Use a managed Postgres instance (or container) and inject `DATABASE_URL` via environment — do not bake secrets into images.

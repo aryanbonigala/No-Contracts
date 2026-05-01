@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kalshi-no-carry"
-version = "0.1.0"
+version = "0.3.0"
 description = "Research scaffold for Kalshi NO-contract carry / mispricing studies"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,6 +13,10 @@ authors = [{ name = "Kalshi NO Carry Research" }]
 dependencies = [
     "pydantic>=2.5",
     "pydantic-settings>=2.1",
+    "httpx>=0.27",
+    "cryptography>=42.0",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.1",
 ]
 
 [project.optional-dependencies]
