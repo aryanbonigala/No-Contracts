@@ -21,6 +21,33 @@ class EventCluster:
     reference_time_utc: datetime
 
 
+def chronological_partition_sizes(
+    n: int,
+    train_fraction: float,
+    validation_fraction: float,
+) -> tuple[int, int, int]:
+    """
+    Deterministic integer sizes for a chronological 3-way split of *n* clusters.
+
+    Uses ``int(n * train_fraction)`` and ``int(n * (train_fraction + validation_fraction))``
+    boundaries; the remainder is **test** (same structure as integer-percent splits for 60/20/20).
+    """
+    if n < 0:
+        raise ValueError("n must be non-negative")
+    if train_fraction < 0 or validation_fraction < 0:
+        raise ValueError("fractions must be non-negative")
+    if n == 0:
+        return (0, 0, 0)
+    cut_train = int(n * train_fraction)
+    cut_val_boundary = int(n * (train_fraction + validation_fraction))
+    n_train = cut_train
+    n_val = cut_val_boundary - cut_train
+    n_test = n - cut_val_boundary
+    if n_test < 0:
+        raise RuntimeError("internal partition sizing error")
+    return n_train, n_val, n_test
+
+
 def split_event_clusters_chronologically(
     clusters: Sequence[EventCluster],
     *,

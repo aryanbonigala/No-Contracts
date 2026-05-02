@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Mapping
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, delete, func, select
 from sqlalchemy.orm import Session
 
 from kalshi_no_carry.db.schema import (
@@ -270,6 +270,92 @@ def upsert_event_cluster(
     return existing
 
 
+def list_raw_events_for_clustering(session: Session) -> list[dict[str, Any]]:
+    """Return raw event rows as plain dicts for deterministic clustering (read-only)."""
+    rows = session.scalars(select(RawEvent).order_by(RawEvent.event_ticker)).all()
+    return [
+        {
+            "event_ticker": r.event_ticker,
+            "ticker": r.event_ticker,
+            "series_ticker": r.series_ticker,
+            "title": r.title,
+            "category": r.category,
+            "close_time": None,
+            "expiration_time": None,
+            "settlement_time": None,
+            "raw_json": r.raw_json,
+            "fetched_at": r.fetched_at,
+        }
+        for r in rows
+    ]
+
+
+def list_raw_markets_for_clustering(session: Session) -> list[dict[str, Any]]:
+    """Return raw market rows as plain dicts for deterministic clustering (read-only)."""
+    rows = session.scalars(select(RawMarket).order_by(RawMarket.market_ticker)).all()
+    return [
+        {
+            "market_ticker": r.market_ticker,
+            "ticker": r.market_ticker,
+            "event_ticker": r.event_ticker,
+            "series_ticker": r.series_ticker,
+            "title": r.title,
+            "subtitle": r.subtitle,
+            "category": r.category,
+            "close_time": r.close_time,
+            "expiration_time": r.expiration_time,
+            "settlement_time": r.settlement_time,
+            "raw_json": r.raw_json,
+            "fetched_at": r.fetched_at,
+        }
+        for r in rows
+    ]
+
+
+def list_event_clusters(session: Session) -> list[EventCluster]:
+    """
+    List ``event_clusters`` rows sorted for chronological splits:
+
+    ``(close_time ascending, NULLs last), cluster_id``.
+    """
+    from datetime import datetime, timezone
+
+    rows = session.scalars(select(EventCluster)).all()
+    far_future = datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+
+    def _key_sort(ec: EventCluster) -> tuple[object, str]:
+        ct = ec.close_time
+        if ct is None:
+            return (far_future, ec.cluster_id)
+        if ct.tzinfo is None:
+            ct = ct.replace(tzinfo=timezone.utc)
+        return (ct, ec.cluster_id)
+
+    return sorted(rows, key=_key_sort)
+
+
+def get_existing_strategy_splits(
+    session: Session, *, split_version: str | None = None
+) -> list[StrategySplit]:
+    stmt = select(StrategySplit).order_by(StrategySplit.cluster_id, StrategySplit.split_version)
+    if split_version is not None:
+        stmt = stmt.where(StrategySplit.split_version == split_version)
+    return list(session.scalars(stmt).all())
+
+
+def count_strategy_splits(session: Session, *, split_version: str | None = None) -> int:
+    stmt = select(func.count()).select_from(StrategySplit)
+    if split_version is not None:
+        stmt = stmt.where(StrategySplit.split_version == split_version)
+    return int(session.scalar(stmt) or 0)
+
+
+def delete_strategy_splits_for_version(session: Session, split_version: str) -> int:
+    """Delete all ``strategy_splits`` rows for *split_version*; returns deleted row count."""
+    res = session.execute(delete(StrategySplit).where(StrategySplit.split_version == split_version))
+    return int(res.rowcount or 0)
+
+
 def upsert_strategy_split(
     session: Session,
     *,
@@ -284,21 +370,26 @@ def upsert_strategy_split(
     cid = cluster_id.strip()
     if not cid:
         raise ValueError("cluster_id must be non-empty")
+    sv = (split_version or "").strip()
+    if not sv:
+        raise ValueError("split_version must be non-empty")
     now = assigned_at or _utcnow()
-    stmt = select(StrategySplit).where(StrategySplit.cluster_id == cid)
+    stmt = select(StrategySplit).where(
+        StrategySplit.cluster_id == cid,
+        StrategySplit.split_version == sv,
+    )
     existing = session.execute(stmt).scalar_one_or_none()
     if existing is None:
         row = StrategySplit(
             cluster_id=cid,
+            split_version=sv,
             split_name=split_name,
-            split_version=split_version,
             assigned_at=now,
             notes=notes,
         )
         session.add(row)
         return row
     existing.split_name = split_name
-    existing.split_version = split_version
     existing.assigned_at = now
     existing.notes = notes
     session.add(existing)

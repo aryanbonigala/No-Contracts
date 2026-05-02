@@ -6,7 +6,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from kalshi_no_carry.research.splits import EventCluster, split_event_clusters_chronologically
+from kalshi_no_carry.research.splits import (
+    EventCluster,
+    chronological_partition_sizes,
+    split_event_clusters_chronologically,
+)
 
 
 def _dt(minutes: int) -> datetime:
@@ -64,3 +68,13 @@ def test_stable_tiebreak_by_cluster_id() -> None:
     assert train == ["a"]
     assert val == []
     assert test == ["b"]
+
+
+def test_chronological_partition_sizes_matches_integer_split() -> None:
+    assert chronological_partition_sizes(10, 0.6, 0.2) == (6, 2, 2)
+    assert chronological_partition_sizes(7, 0.6, 0.2) == (4, 1, 2)
+
+
+def test_chronological_partition_sizes_negative_n() -> None:
+    with pytest.raises(ValueError):
+        chronological_partition_sizes(-1, 0.6, 0.2)

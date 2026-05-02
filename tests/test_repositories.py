@@ -10,6 +10,8 @@ from sqlalchemy.orm import sessionmaker
 
 from kalshi_no_carry.database import create_all_tables, create_engine_from_database_url, drop_all_tables
 from kalshi_no_carry.db.repositories import (
+    count_strategy_splits,
+    delete_strategy_splits_for_version,
     insert_orderbook_snapshot,
     record_api_fetch,
     upsert_event,
@@ -143,7 +145,7 @@ def test_insert_orderbook_snapshot(session_factory) -> None:
         assert row.raw_json == book
 
 
-def test_upsert_strategy_split(session_factory) -> None:
+def test_upsert_strategy_split_two_versions_same_cluster(session_factory) -> None:
     mk = session_factory
     with mk() as session:
         upsert_event_cluster(session, cluster_id="c1", representative_title="Cluster 1")
@@ -164,13 +166,95 @@ def test_upsert_strategy_split(session_factory) -> None:
         )
         session.commit()
     with mk() as session:
-        row = session.scalars(select(StrategySplit).where(StrategySplit.cluster_id == "c1")).one()
-        assert row.split_name == "test"
-        assert row.split_version == "v2024-02"
-        assert row.notes == "holdout"
+        rows = session.scalars(
+            select(StrategySplit)
+            .where(StrategySplit.cluster_id == "c1")
+            .order_by(StrategySplit.split_version)
+        ).all()
+        assert len(rows) == 2
+        assert rows[0].split_version == "v2024-01" and rows[0].split_name == "train"
+        assert rows[1].split_version == "v2024-02" and rows[1].split_name == "test"
+        assert rows[1].notes == "holdout"
 
 
-def test_upsert_strategy_split_invalid_name(session_factory) -> None:
+def test_upsert_strategy_split_same_cluster_version_updates_row(session_factory) -> None:
+    mk = session_factory
+    with mk() as session:
+        upsert_event_cluster(session, cluster_id="c1")
+        upsert_strategy_split(session, cluster_id="c1", split_name="train", split_version="vA")
+        session.commit()
+    with mk() as session:
+        upsert_strategy_split(
+            session,
+            cluster_id="c1",
+            split_name="validation",
+            split_version="vA",
+            notes="revised",
+        )
+        session.commit()
+    with mk() as session:
+        n = session.scalar(select(func.count()).select_from(StrategySplit))
+        assert n == 1
+        row = session.scalars(
+            select(StrategySplit).where(
+                StrategySplit.cluster_id == "c1",
+                StrategySplit.split_version == "vA",
+            )
+        ).one()
+        assert row.split_name == "validation"
+        assert row.notes == "revised"
+
+
+def test_count_strategy_splits_independent_by_version(session_factory) -> None:
+    mk = session_factory
+    with mk() as session:
+        upsert_event_cluster(session, cluster_id="c1")
+        upsert_event_cluster(session, cluster_id="c2")
+        upsert_strategy_split(session, cluster_id="c1", split_name="train", split_version="verA")
+        upsert_strategy_split(session, cluster_id="c2", split_name="test", split_version="verB")
+        session.commit()
+    with mk() as session:
+        assert count_strategy_splits(session, split_version="verA") == 1
+        assert count_strategy_splits(session, split_version="verB") == 1
+        assert count_strategy_splits(session) == 2
+
+
+def test_delete_strategy_splits_for_version_preserves_other_version_same_cluster(
+    session_factory,
+) -> None:
+    mk = session_factory
+    with mk() as session:
+        upsert_event_cluster(session, cluster_id="cluster_1")
+        upsert_strategy_split(session, cluster_id="cluster_1", split_name="train", split_version="A")
+        upsert_strategy_split(session, cluster_id="cluster_1", split_name="test", split_version="B")
+        session.commit()
+    with mk() as session:
+        assert delete_strategy_splits_for_version(session, "A") == 1
+        session.commit()
+    with mk() as session:
+        assert count_strategy_splits(session, split_version="A") == 0
+        assert count_strategy_splits(session, split_version="B") == 1
+        row = session.scalars(
+            select(StrategySplit).where(StrategySplit.split_version == "B")
+        ).one()
+        assert row.cluster_id == "cluster_1" and row.split_name == "test"
+
+
+def test_delete_strategy_splits_for_version(session_factory) -> None:
+    mk = session_factory
+    with mk() as session:
+        upsert_event_cluster(session, cluster_id="c1")
+        upsert_event_cluster(session, cluster_id="c2")
+        upsert_strategy_split(session, cluster_id="c1", split_name="train", split_version="va")
+        upsert_strategy_split(session, cluster_id="c2", split_name="test", split_version="vb")
+        session.commit()
+    with mk() as session:
+        n = delete_strategy_splits_for_version(session, "va")
+        session.commit()
+        assert n == 1
+    with mk() as session:
+        assert count_strategy_splits(session, split_version="va") == 0
+        assert count_strategy_splits(session, split_version="vb") == 1
     mk = session_factory
     with mk() as session:
         upsert_event_cluster(session, cluster_id="c2")

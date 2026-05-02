@@ -112,12 +112,19 @@ class EventCluster(Base):
 
 
 class StrategySplit(Base):
+    """
+    One train/validation/test assignment per (cluster_id, split_version).
+
+    Multiple ``split_version`` labels can coexist for the same cluster; versioning
+    is part of the primary key, not a decorative column.
+    """
+
     __tablename__ = "strategy_splits"
 
     cluster_id: Mapped[str] = mapped_column(
         String(256), ForeignKey("event_clusters.cluster_id", ondelete="CASCADE"), primary_key=True
     )
+    split_version: Mapped[str] = mapped_column(String(64), primary_key=True)
     split_name: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    split_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     assigned_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

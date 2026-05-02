@@ -40,6 +40,11 @@ def test_key_columns_exist(model: type, column: str) -> None:
     assert column in model.__table__.columns
 
 
+def test_strategy_splits_composite_primary_key() -> None:
+    pk_cols = {c.key for c in StrategySplit.__table__.primary_key.columns}
+    assert pk_cols == {"cluster_id", "split_version"}
+
+
 def test_create_all_sqlite_memory() -> None:
     engine = create_engine_from_database_url("sqlite+pysqlite:///:memory:")
     try:
