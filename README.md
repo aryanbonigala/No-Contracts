@@ -1,10 +1,10 @@
-# Kalshi NO Carry (v0.5.1 — split versioning; clustering and research splits)
+# Kalshi NO Carry (v0.5.2 — Alembic migration foundation; clustering and research splits)
 
 Production-oriented **research** codebase for testing a statistical thesis on Kalshi binary markets:
 
 **Thesis (informal):** there may be edge in buying high-confidence **NO** contracts when the market-implied NO price is below the “true” NO probability after adjusting for fees, spread, ambiguity risk, and correlated event risk.
 
-This repository is **v0.5.1** (`Kalshi_NO_Carry_v0.5.1_StrategySplitVersioningFix`). **v0.5** added **deterministic event clustering** and **leakage-safe chronological train / validation / test assignment** on top of **v0.4** read-only collectors. **v0.5.1** fixes **`strategy_splits`** so rows are keyed by **`(cluster_id, split_version)`** (v0.5 incorrectly used `cluster_id` alone as the primary key), so multiple split versions can coexist. Collectors still persist **raw events**, **raw markets**, **append-only orderbook snapshots**, and **API fetch logs**. This release does **not** trade, place orders, engineer strategy features, train models, or run the NO-carry backtester.
+This repository is **v0.5.2** (`Kalshi_NO_Carry_v0.5.2_AlembicMigrationFoundation`). **v0.5** added **deterministic event clustering** and **leakage-safe chronological train / validation / test assignment** on top of **v0.4** read-only collectors. **v0.5.1** fixed **`strategy_splits`** to use a composite primary key **`(cluster_id, split_version)`**. **v0.5.2** adds **Alembic** so schema changes are versioned (`alembic/`, `alembic.ini`, `scripts/db_migrate.py`). Collectors still persist **raw events**, **raw markets**, **append-only orderbook snapshots**, and **API fetch logs**. This release does **not** trade, place orders, engineer strategy features, train models, or run the NO-carry backtester.
 
 ## Safety / scope
 
@@ -16,7 +16,8 @@ This repository is **v0.5.1** (`Kalshi_NO_Carry_v0.5.1_StrategySplitVersioningFi
 - `src/kalshi_no_carry/collectors/` — `events.py`, `markets.py`, `orderbooks.py`, `common.py`
 - `src/kalshi_no_carry/db/` — schema + repositories
 - `src/kalshi_no_carry/research/` — `event_clustering.py`, `splits.py`, `build_splits.py` (clustering + split materialization)
-- `scripts/` — `collect_markets.py`, `collect_orderbooks.py`, `collect_snapshot.py`, `build_splits.py`, `init_db.py`, …
+- `scripts/` — collectors, `build_splits.py`, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
+- `alembic/` — versioned DDL (see **Database setup** below)
 - `tests/` — fakes + SQLite in-memory (**no live Kalshi or Postgres required** for default pytest)
 
 ## Install
@@ -33,10 +34,32 @@ pip install -e ".[dev]"
 - **Kalshi:** `KALSHI_BASE_URL` (full `…/trade-api/v2`), optional auth env vars — see `.env.example`.
 - **Database:** **`DATABASE_URL` is required for collector scripts and for `build_splits.py`** (Postgres recommended on a VM; `scripts/check_env.py` shows a **redacted** preview). **Offline unit tests** use SQLite in-memory and do not need `DATABASE_URL`.
 
-Initialize schema once (optional; scripts can pass `--create-tables`):
+### Database setup (two options)
+
+1. **Fresh local / disposable dev database** — `SQLAlchemy` **`create_all`** (does **not** alter existing tables; safe for empty SQLite or a new Postgres database):
+
+   ```bash
+   python scripts/init_db.py
+   ```
+
+   Collector scripts may also use **`--create-tables`**, which calls the same helper.
+
+2. **Versioned schema (recommended for any database with data you care about)** — **Alembic** tracks applied revisions and runs explicit upgrade steps:
+
+   ```bash
+   python scripts/db_migrate.py
+   ```
+
+   Requires **`DATABASE_URL`**. This runs **`alembic upgrade head`**. The Alembic environment reads `DATABASE_URL` from the environment or from `.env` via **`get_settings()`**; it never prints the raw URL.
+
+**`create_all` vs migrations:** `create_all_tables()` only creates missing tables from the current ORM metadata. It will **not** migrate an older physical schema (for example, a pre–v0.5.1 `strategy_splits` primary key). Use **Alembic** for evolving databases, or drop and recreate disposable databases and use `init_db.py`.
+
+**New revisions:** after editing ORM models, generate a migration (review the file before committing):
 
 ```bash
-python scripts/init_db.py
+python scripts/db_revision.py "describe change"
+# optional: compare DB to models (requires DATABASE_URL)
+python scripts/db_revision.py "describe change" --autogenerate
 ```
 
 ## Run collectors (requires `DATABASE_URL` + network to Kalshi)
@@ -89,6 +112,6 @@ Optional Postgres smoke: set `RUN_DB_INTEGRATION_TESTS=1` and `DATABASE_URL` (un
 - [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) — tables and how collectors / split builder fill them
 - [`docs/RESEARCH_RULES.md`](docs/RESEARCH_RULES.md) — research guardrails and sealed test policy
 
-## Deferred (not in v0.5)
+## Deferred (not in this track)
 
 Strategy features, model training, NO-carry backtester, order placement, portfolio, execution.

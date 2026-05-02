@@ -1,4 +1,4 @@
-# Architecture (v0.5 — collectors + research split layer)
+# Architecture (v0.5 — collectors + research split layer + v0.5.2 migrations)
 
 ## Purpose
 
@@ -20,6 +20,9 @@ flowchart LR
     REP[db.repositories]
     SCH[db.schema]
   end
+  subgraph migrations [v0.5.2]
+    ALB[Alembic revisions]
+  end
   subgraph splits [v0.5]
     BC[research.build_splits]
     CL[event_clustering]
@@ -33,6 +36,7 @@ flowchart LR
   REP --> SCH
   DB[(Postgres / SQLite)]
   SCH --> DB
+  ALB --> DB
   subgraph research_future [Future]
     FE[features]
     BT[backtest_no_carry]
@@ -51,7 +55,8 @@ flowchart LR
 |------|----------------------|
 | `kalshi_no_carry.kalshi_client` | Read-only Trade API v2 (`get_events`, `iter_events`, markets, orderbooks, status) |
 | `kalshi_no_carry.collectors.*` | `collect_events`, `collect_markets`, `collect_orderbooks_*` |
-| `kalshi_no_carry.database` | Engine + DDL + `healthcheck` + URL redaction |
+| `kalshi_no_carry.database` | Engine + `create_all` / `drop_all` + `healthcheck` + URL redaction |
+| `alembic/` + `scripts/db_migrate.py` | Versioned DDL (`alembic upgrade head`); uses same ORM metadata |
 | `kalshi_no_carry.db.*` | ORM + idempotent upserts + snapshot insert + clustering/split **read helpers** |
 | `kalshi_no_carry.research.event_clustering` | Deterministic cluster keys / ids from raw dict rows |
 | `kalshi_no_carry.research.splits` | Pure chronological partition math (integer % and float fractions) |
@@ -69,6 +74,5 @@ flowchart LR
 
 - Feature pipelines, NO-carry backtester  
 - Order placement, portfolio, execution  
-- Alembic migrations (still `create_all` for DDL)
 
 See `DATA_SCHEMA.md` and `RESEARCH_RULES.md`.

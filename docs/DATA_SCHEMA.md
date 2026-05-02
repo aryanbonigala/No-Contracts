@@ -1,6 +1,6 @@
 # Data schema (v0.3 DDL + v0.4 ingestion + v0.5 clustering/splits)
 
-This document matches the SQLAlchemy models in `kalshi_no_carry.db.schema`. Tables are created via `create_all_tables()` (see `scripts/init_db.py`). **Alembic** is not wired yet; schema evolution will add versioned migrations when needed.
+This document matches the SQLAlchemy models in `kalshi_no_carry.db.schema`. You can create tables in two ways: **`create_all_tables()`** (see `scripts/init_db.py`) for a **fresh** disposable database, or **Alembic** (`scripts/db_migrate.py`, `alembic/versions/`) for **versioned** schema changes on databases that hold research data.
 
 **v0.4 collectors** populate `raw_events`, `raw_markets`, and `raw_orderbook_snapshots` using `KalshiClient` plus `db.repositories`, and append rows to **`api_fetch_log`**.
 
@@ -122,8 +122,12 @@ The **final test** bucket must remain **sealed** after honest reporting (see `RE
 
 - `raw_orderbook_snapshots`: `(market_ticker, fetched_at)` composite; individual indexes on `fetched_at` and `market_ticker` as defined in the model.
 
-## Migrations
+## Migrations (v0.5.2+)
 
-v0.3+ uses `Base.metadata.create_all()`. Future work: add Alembic with autogenerate against this metadata for zero-drift production deploys.
+**Alembic** is the supported mechanism for **changing** the schema over time. Revisions live under `alembic/versions/`; `alembic/env.py` targets `kalshi_no_carry.db.schema.Base.metadata`. Run **`python scripts/db_migrate.py`** (requires `DATABASE_URL`) to apply `alembic upgrade head`.
 
-**v0.5.1 `strategy_splits` change:** the primary key moved from `cluster_id` alone to **`(cluster_id, split_version)`**. There is **no Alembic migration** yet. Existing SQLite/Postgres databases created under v0.5 **cannot** be upgraded in place by `create_all` alone (SQLAlchemy will not alter the old PK). For local dev, **drop and recreate** tables (or the whole DB) and rerun clustering + split assignment, or apply a manual DDL migration if you must preserve data.
+**`create_all` (unchanged):** `scripts/init_db.py` and collector `--create-tables` still call `Base.metadata.create_all()`. That is ideal for **empty** SQLite files or new Postgres instances. It does **not** alter existing tables when the ORM definition diverges (no automatic `ALTER TABLE`).
+
+**`strategy_splits` (v0.5.1):** the primary key is **`(cluster_id, split_version)`** (composite). The baseline revision **`0001_initial_schema`** applies the full current ORM schema via `create_all` inside the migration so new environments match models.
+
+**Pre–v0.5.1 databases:** if `strategy_splits` was created with **`cluster_id` only** as the primary key, **neither** `create_all` **nor** the initial Alembic revision will safely reshape that table in place. **Recreate** the database (or write a **custom** follow-on migration with explicit `ALTER TABLE` / rebuild steps) before relying on Alembic history. There is no automated upgrade path from the old PK layout in this repository.

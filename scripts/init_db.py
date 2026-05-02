@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Create database tables (SQLAlchemy metadata). Exits non-zero if DATABASE_URL is missing."""
+"""Create database tables via SQLAlchemy ``create_all`` (no Alembic revision tracking).
+
+For versioned schema management on databases with data you care about, use
+``scripts/db_migrate.py`` instead. Exits non-zero if DATABASE_URL is missing.
+"""
 
 from __future__ import annotations
 

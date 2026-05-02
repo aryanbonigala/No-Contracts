@@ -1,0 +1,4 @@
+Generic Alembic migrations for kalshi-no-carry.
+
+Revision scripts live in ``versions/``. Prefer ``python scripts/db_migrate.py`` for
+``upgrade head`` so ``DATABASE_URL`` is sourced consistently with the rest of the app.
