@@ -1,10 +1,10 @@
-# Kalshi NO Carry (v0.5.2 — Alembic migration foundation; clustering and research splits)
+# Kalshi NO Carry (v0.5.4 — JSON/JSONB Alembic alignment; clustering and research splits)
 
 Production-oriented **research** codebase for testing a statistical thesis on Kalshi binary markets:
 
 **Thesis (informal):** there may be edge in buying high-confidence **NO** contracts when the market-implied NO price is below the “true” NO probability after adjusting for fees, spread, ambiguity risk, and correlated event risk.
 
-This repository is **v0.5.2** (`Kalshi_NO_Carry_v0.5.2_AlembicMigrationFoundation`). **v0.5** added **deterministic event clustering** and **leakage-safe chronological train / validation / test assignment** on top of **v0.4** read-only collectors. **v0.5.1** fixed **`strategy_splits`** to use a composite primary key **`(cluster_id, split_version)`**. **v0.5.2** adds **Alembic** so schema changes are versioned (`alembic/`, `alembic.ini`, `scripts/db_migrate.py`). Collectors still persist **raw events**, **raw markets**, **append-only orderbook snapshots**, and **API fetch logs**. This release does **not** trade, place orders, engineer strategy features, train models, or run the NO-carry backtester.
+This repository is **v0.5.4** (`Kalshi_NO_Carry_v0.5.4_JSONBMigrationAlignment`). **v0.5** added **deterministic event clustering** and **leakage-safe chronological train / validation / test assignment** on top of **v0.4** read-only collectors. **v0.5.1** fixed **`strategy_splits`** to use a composite primary key **`(cluster_id, split_version)`**. **v0.5.2** added **Alembic** infrastructure. **v0.5.3** froze **`0001_initial_schema`** as explicit DDL. **v0.5.4** aligns that migration’s JSON columns with the ORM: **JSONB on Postgres**, **JSON on SQLite**, via **`sa.JSON().with_variant(postgresql.JSONB(...), "postgresql")`** — same convention as **`create_all`**. Collectors still persist **raw events**, **raw markets**, **append-only orderbook snapshots**, and **API fetch logs**. This release does **not** trade, place orders, engineer strategy features, train models, or run the NO-carry backtester.
 
 ## Safety / scope
 
@@ -52,7 +52,9 @@ pip install -e ".[dev]"
 
    Requires **`DATABASE_URL`**. This runs **`alembic upgrade head`**. The Alembic environment reads `DATABASE_URL` from the environment or from `.env` via **`get_settings()`**; it never prints the raw URL.
 
-**`create_all` vs migrations:** `create_all_tables()` only creates missing tables from the current ORM metadata. It will **not** migrate an older physical schema (for example, a pre–v0.5.1 `strategy_splits` primary key). Use **Alembic** for evolving databases, or drop and recreate disposable databases and use `init_db.py`.
+**`create_all` vs migrations:** `create_all_tables()` only creates missing tables from the **current** ORM metadata. It will **not** migrate an older physical schema (for example, a pre–v0.5.1 `strategy_splits` primary key). Use **`create_all`** only for **quick empty DB / test bootstraps**. For databases with data you care about, use **Alembic** (`scripts/db_migrate.py`).
+
+**Frozen revisions:** committed Alembic files under `alembic/versions/` are **version-controlled, explicit DDL**. Do **not** implement production migrations as **`Base.metadata.create_all`** inside a revision — that would re-bind migration history to whatever the ORM happens to be when someone runs an old revision on a new checkout. Add new revisions with explicit `op.create_table` / `alter_column` (or autogenerate **plus hand review**) for each schema change.
 
 **New revisions:** after editing ORM models, generate a migration (review the file before committing):
 

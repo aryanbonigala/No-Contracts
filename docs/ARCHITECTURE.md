@@ -1,4 +1,4 @@
-# Architecture (v0.5 — collectors + research split layer + v0.5.2 migrations)
+# Architecture (v0.5 — collectors + research split layer; v0.5.2+ Alembic)
 
 ## Purpose
 
@@ -20,8 +20,8 @@ flowchart LR
     REP[db.repositories]
     SCH[db.schema]
   end
-  subgraph migrations [v0.5.2]
-    ALB[Alembic revisions]
+  subgraph migrations [Alembic]
+    ALB[Frozen revision DDL]
   end
   subgraph splits [v0.5]
     BC[research.build_splits]
@@ -56,7 +56,7 @@ flowchart LR
 | `kalshi_no_carry.kalshi_client` | Read-only Trade API v2 (`get_events`, `iter_events`, markets, orderbooks, status) |
 | `kalshi_no_carry.collectors.*` | `collect_events`, `collect_markets`, `collect_orderbooks_*` |
 | `kalshi_no_carry.database` | Engine + `create_all` / `drop_all` + `healthcheck` + URL redaction |
-| `alembic/` + `scripts/db_migrate.py` | Versioned DDL (`alembic upgrade head`); uses same ORM metadata |
+| `alembic/` + `scripts/db_migrate.py` | Versioned DDL via **explicit** Alembic revisions (`alembic upgrade head`); baseline `0001` is frozen `op.create_table` DDL — not `create_all` in migrations |
 | `kalshi_no_carry.db.*` | ORM + idempotent upserts + snapshot insert + clustering/split **read helpers** |
 | `kalshi_no_carry.research.event_clustering` | Deterministic cluster keys / ids from raw dict rows |
 | `kalshi_no_carry.research.splits` | Pure chronological partition math (integer % and float fractions) |

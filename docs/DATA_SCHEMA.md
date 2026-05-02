@@ -1,6 +1,6 @@
 # Data schema (v0.3 DDL + v0.4 ingestion + v0.5 clustering/splits)
 
-This document matches the SQLAlchemy models in `kalshi_no_carry.db.schema`. You can create tables in two ways: **`create_all_tables()`** (see `scripts/init_db.py`) for a **fresh** disposable database, or **Alembic** (`scripts/db_migrate.py`, `alembic/versions/`) for **versioned** schema changes on databases that hold research data.
+This document matches the SQLAlchemy models in `kalshi_no_carry.db.schema`. You can create tables in two ways: **`create_all_tables()`** (see `scripts/init_db.py`) for a **fresh** disposable database, or **Alembic** (`scripts/db_migrate.py`, `alembic/versions/`) for **versioned, explicit** schema DDL on databases that hold research data. **Alembic revision files are frozen** — baseline `0001_initial_schema` uses explicit `op.create_table` operations (not `create_all` inside the migration) and matches the ORM’s **JSON / JSONB** convention (see below).
 
 **v0.4 collectors** populate `raw_events`, `raw_markets`, and `raw_orderbook_snapshots` using `KalshiClient` plus `db.repositories`, and append rows to **`api_fetch_log`**.
 
@@ -21,6 +21,10 @@ Portable `JSON` with PostgreSQL `JSONB` variant for efficient storage and indexi
 ```text
 JSON().with_variant(JSONB(), "postgresql")
 ```
+
+The baseline Alembic revision **`0001_initial_schema`** (v0.5.4+) uses the same shape explicitly: `sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql")` via a small `json_type()` helper, so **`create_all` and `0001` agree on Postgres (`JSONB`) vs SQLite (`JSON`)**. **Normal tests do not require live Postgres** — behavior is covered by offline compilation checks.
+
+If you already have a PostgreSQL database where JSON columns were created as plain **`JSON`** (not **`JSONB`**) and you require exact type alignment, you may need a **manual or follow-up migration** (`ALTER TABLE ... ALTER COLUMN ... SET DATA TYPE ...` or rebuild); this repository does not ship an automatic conversion for that case.
 
 ## Tables
 
@@ -122,12 +126,16 @@ The **final test** bucket must remain **sealed** after honest reporting (see `RE
 
 - `raw_orderbook_snapshots`: `(market_ticker, fetched_at)` composite; individual indexes on `fetched_at` and `market_ticker` as defined in the model.
 
-## Migrations (v0.5.2+)
+## Migrations (v0.5.2+; frozen baseline; JSONB alignment v0.5.4)
 
-**Alembic** is the supported mechanism for **changing** the schema over time. Revisions live under `alembic/versions/`; `alembic/env.py` targets `kalshi_no_carry.db.schema.Base.metadata`. Run **`python scripts/db_migrate.py`** (requires `DATABASE_URL`) to apply `alembic upgrade head`.
+**Alembic** is the supported mechanism for **changing** the schema over time. Revisions live under `alembic/versions/`; `alembic/env.py` still exposes `Base.metadata` for **autogenerate** comparisons only. Run **`python scripts/db_migrate.py`** (requires `DATABASE_URL`) to apply `alembic upgrade head`.
 
-**`create_all` (unchanged):** `scripts/init_db.py` and collector `--create-tables` still call `Base.metadata.create_all()`. That is ideal for **empty** SQLite files or new Postgres instances. It does **not** alter existing tables when the ORM definition diverges (no automatic `ALTER TABLE`).
+**Frozen revision files:** each committed migration should contain **explicit operations** (`op.create_table`, `op.add_column`, …) so a given revision id always means the same DDL. The baseline **`0001_initial_schema`** is **frozen explicit DDL**; it does **not** call `Base.metadata.create_all`. **Do not** add new migrations that delegate upgrades to `create_all` for production paths — use incremental, reviewable DDL (or autogenerate + edit) per change.
 
-**`strategy_splits` (v0.5.1):** the primary key is **`(cluster_id, split_version)`** (composite). The baseline revision **`0001_initial_schema`** applies the full current ORM schema via `create_all` inside the migration so new environments match models.
+**JSON / JSONB (v0.5.4):** **`0001_initial_schema`** defines JSON-ish columns with the same **`JSON` / `JSONB`** dialect mapping as the ORM (`SQLite` → `JSON`, `PostgreSQL` → `JSONB`), so paths **`init_db` / `create_all`** and **`db_migrate` / `0001`** are intended to match on a fresh database.
 
-**Pre–v0.5.1 databases:** if `strategy_splits` was created with **`cluster_id` only** as the primary key, **neither** `create_all` **nor** the initial Alembic revision will safely reshape that table in place. **Recreate** the database (or write a **custom** follow-on migration with explicit `ALTER TABLE` / rebuild steps) before relying on Alembic history. There is no automated upgrade path from the old PK layout in this repository.
+**`create_all` (unchanged):** `scripts/init_db.py` and collector `--create-tables` still call `Base.metadata.create_all()`. That remains appropriate for **empty** SQLite files or disposable dev databases. It does **not** alter existing tables when the ORM definition diverges (no automatic `ALTER TABLE`).
+
+**`strategy_splits` (v0.5.1):** the primary key is **`(cluster_id, split_version)`** (composite). **`0001_initial_schema`** encodes that layout explicitly, including **`ON DELETE CASCADE`** on `cluster_id` → `event_clusters.cluster_id`.
+
+**Pre–v0.5.1 databases:** if `strategy_splits` was created with **`cluster_id` only** as the primary key, **neither** `create_all` **nor** replaying **`0001`** on an existing DB will safely reshape that table in place. **Recreate** the database (or write a **custom** follow-on migration with explicit `ALTER TABLE` / rebuild steps) before relying on Alembic history. There is no automated upgrade path from the old PK layout in this repository.
