@@ -87,7 +87,7 @@ def test_alembic_heads_runs_without_database_url() -> None:
     )
     assert proc.returncode == 0, proc.stderr
     out = proc.stdout
-    assert "0002_feature_rows" in out
+    assert "0003_backtest_runs" in out
     assert (ROOT / "alembic" / "versions" / "0001_initial_schema.py").is_file()
 
 
@@ -145,7 +145,20 @@ def test_alembic_upgrade_sqlite_file_creates_tables(tmp_path: Path, monkeypatch:
 
     eng = create_engine(url)
     try:
-        names = set(inspect(eng).get_table_names())
+        insp = inspect(eng)
+        names = set(insp.get_table_names())
+
+        pk = insp.get_pk_constraint("strategy_splits")
+        assert set(pk["constrained_columns"]) == {"cluster_id", "split_version"}
+
+        pk_fr = insp.get_pk_constraint("research_feature_rows")
+        assert set(pk_fr["constrained_columns"]) == {"snapshot_id", "split_version", "feature_version"}
+
+        pk_bt = insp.get_pk_constraint("backtest_trades")
+        assert set(pk_bt["constrained_columns"]) == {"run_id", "trade_index"}
+
+        pk_run = insp.get_pk_constraint("backtest_runs")
+        assert set(pk_run["constrained_columns"]) == {"run_id"}
     finally:
         eng.dispose()
 
@@ -153,13 +166,9 @@ def test_alembic_upgrade_sqlite_file_creates_tables(tmp_path: Path, monkeypatch:
     assert "event_clusters" in names
     assert "raw_events" in names
     assert "research_feature_rows" in names
+    assert "backtest_runs" in names
+    assert "backtest_trades" in names
     assert "alembic_version" in names
-
-    pk = inspect(eng).get_pk_constraint("strategy_splits")
-    assert set(pk["constrained_columns"]) == {"cluster_id", "split_version"}
-
-    pk_fr = inspect(eng).get_pk_constraint("research_feature_rows")
-    assert set(pk_fr["constrained_columns"]) == {"snapshot_id", "split_version", "feature_version"}
 
 
 def test_alembic_sqlite_tables_match_orm_table_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

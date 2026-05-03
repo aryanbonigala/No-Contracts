@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from kalshi_no_carry.db.schema import (
     ApiFetchLog,
+    BacktestRun,
+    BacktestTrade,
     EventCluster,
     RawEvent,
     RawMarket,
@@ -456,6 +458,139 @@ def count_research_feature_rows(
     if feature_version is not None:
         stmt = stmt.where(ResearchFeatureRow.feature_version == feature_version.strip())
     return int(session.scalar(stmt) or 0)
+
+
+def research_feature_row_as_dict(row: ResearchFeatureRow) -> dict[str, Any]:
+    """ORM row → plain dict (all columns) for deterministic backtests / export."""
+    return {c.key: getattr(row, c.key) for c in ResearchFeatureRow.__table__.columns}
+
+
+def list_feature_rows_for_backtest(
+    session: Session,
+    *,
+    split_version: str,
+    feature_version: str,
+    include_splits: Sequence[str] = ("train", "validation"),
+    include_test: bool = False,
+    limit: int | None = None,
+    market_tickers: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Load ``research_feature_rows`` for read-only backtesting.
+
+    Ordering: ``split_name`` (train, validation, test), ``cluster_id``, ``market_ticker``,
+    ``fetched_at``, ``snapshot_id``. Test split is omitted from the SQL filter unless
+    ``include_test=True`` (even if the caller lists ``test`` in ``include_splits``).
+    """
+    sv = (split_version or "").strip()
+    fv = (feature_version or "").strip()
+    if not sv or not fv:
+        raise ValueError("split_version and feature_version are required")
+
+    allowed: set[str] = set()
+    for s in include_splits:
+        t = str(s).strip()
+        if t:
+            allowed.add(t)
+    if not include_test:
+        allowed.discard("test")
+    for name in allowed:
+        if name not in ("train", "validation", "test"):
+            raise ValueError(f"invalid split name: {name!r}")
+    if not allowed:
+        return []
+
+    split_order = case(
+        (ResearchFeatureRow.split_name == "train", 1),
+        (ResearchFeatureRow.split_name == "validation", 2),
+        (ResearchFeatureRow.split_name == "test", 3),
+        else_=9,
+    )
+    stmt = (
+        select(ResearchFeatureRow)
+        .where(
+            ResearchFeatureRow.split_version == sv,
+            ResearchFeatureRow.feature_version == fv,
+            ResearchFeatureRow.split_name.in_(tuple(sorted(allowed))),
+        )
+        .order_by(
+            split_order,
+            ResearchFeatureRow.cluster_id,
+            ResearchFeatureRow.market_ticker,
+            ResearchFeatureRow.fetched_at,
+            ResearchFeatureRow.snapshot_id,
+        )
+    )
+    if market_tickers:
+        mt = [str(m).strip() for m in market_tickers if m and str(m).strip()]
+        if mt:
+            stmt = stmt.where(ResearchFeatureRow.market_ticker.in_(mt))
+    if limit is not None:
+        stmt = stmt.limit(int(limit))
+
+    rows = list(session.scalars(stmt).all())
+    return [research_feature_row_as_dict(r) for r in rows]
+
+
+def _trade_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def insert_backtest_run(session: Session, run: BacktestRun) -> BacktestRun:
+    session.add(run)
+    session.flush()
+    return run
+
+
+def insert_backtest_trades(session: Session, run_id: str, trades: Sequence[Mapping[str, Any]]) -> int:
+    rid = run_id.strip()
+    n = 0
+    for i, t in enumerate(trades):
+        d = dict(t)
+        session.add(
+            BacktestTrade(
+                run_id=rid,
+                trade_index=int(i),
+                snapshot_id=_trade_optional_int(d.get("snapshot_id")),
+                market_ticker=_maybe_str(d.get("market_ticker")),
+                cluster_id=_maybe_str(d.get("cluster_id")),
+                split_name=_maybe_str(d.get("split_name")),
+                no_ask_cents=_trade_optional_int(d.get("no_ask_cents")),
+                fee_cents=_trade_optional_int(d.get("fee_cents")),
+                gross_pnl_cents=_trade_optional_int(d.get("gross_pnl_cents")),
+                net_pnl_cents=_trade_optional_int(d.get("net_pnl_cents")),
+                scored=bool(d.get("scored")),
+                unscored_reason=_maybe_str(d.get("unscored_reason")),
+                raw_json=d,
+            )
+        )
+        n += 1
+    return n
+
+
+def get_backtest_run(session: Session, run_id: str) -> BacktestRun | None:
+    return session.get(BacktestRun, (run_id or "").strip())
+
+
+def list_backtest_runs(session: Session, *, limit: int = 200) -> list[BacktestRun]:
+    stmt = select(BacktestRun).order_by(BacktestRun.created_at.desc()).limit(int(limit))
+    return list(session.scalars(stmt).all())
+
+
+def delete_backtest_run(session: Session, run_id: str) -> bool:
+    rid = (run_id or "").strip()
+    row = session.get(BacktestRun, rid)
+    if row is None:
+        return False
+    # Explicit child delete for SQLite sessions without FK CASCADE enforcement.
+    session.execute(delete(BacktestTrade).where(BacktestTrade.run_id == rid))
+    session.delete(row)
+    return True
 
 
 def list_research_feature_rows(

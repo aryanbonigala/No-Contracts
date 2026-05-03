@@ -1,4 +1,4 @@
-# Data schema (v0.3 — v0.6 feature rows)
+# Data schema (v0.3 — v0.7 feature rows + backtest outputs)
 
 This document matches the SQLAlchemy models in `kalshi_no_carry.db.schema`. You can create tables in two ways: **`create_all_tables()`** (see `scripts/init_db.py`) for a **fresh** disposable database, or **Alembic** (`scripts/db_migrate.py`, `alembic/versions/`) for **versioned, explicit** schema DDL on databases that hold research data. **Alembic revision files are frozen** — baseline `0001_initial_schema` uses explicit `op.create_table` operations (not `create_all` inside the migration) and matches the ORM’s **JSON / JSONB** convention (see below).
 
@@ -139,16 +139,50 @@ Materialized **feature dataset**: one row per **`raw_orderbook_snapshots`** row,
 
 **Versioning:** change **`feature_version`** (e.g. `v0.6_orderbook_snapshot_features`) whenever feature definitions change; multiple versions may coexist for the same snapshot via the composite PK.
 
+### `backtest_runs` (v0.7)
+
+One row per **completed** read-only backtest invocation (or **dry-run** omits this table). **`run_id`** is deterministic (UUIDv5 over canonical `BacktestConfig` JSON).
+
+| Column | Notes |
+|--------|--------|
+| `run_id` | String PK (36-char UUID text). |
+| `backtest_version` | Logical harness / policy label, e.g. `v0.7_no_carry_baseline`. |
+| `strategy_name` | e.g. `no_carry_price_threshold_v0`. |
+| `split_version`, `feature_version` | Must match the feature rows consumed. |
+| `config_json` | Frozen parameters (JSON). |
+| `summary_json` | Aggregated metrics + warnings (JSON). |
+| `created_at` | UTC. |
+| `test_included` | True if **sealed test** rows were allowed for this run. |
+
+### `backtest_trades` (v0.7)
+
+Hypothetical **entries** and scores — **not** live orders. Composite PK **`(run_id, trade_index)`**.
+
+| Column | Notes |
+|--------|--------|
+| `run_id` | FK → `backtest_runs.run_id` (`ON DELETE CASCADE`). |
+| `trade_index` | 0-based order in deterministic trade list. |
+| `snapshot_id`, `market_ticker`, `cluster_id`, `split_name` | Context from feature rows. |
+| `no_ask_cents`, `fee_cents` | Entry / fee (**scaled** by `stake_cents` policy in engine — see `score_no_trade`). |
+| `gross_pnl_cents`, `net_pnl_cents` | Nullable when `scored` is false. |
+| `scored` | Whether a usable **`label_*`** was available. |
+| `unscored_reason` | e.g. missing label. |
+| `raw_json` | Full trade/score dict for audit. |
+
 ## Indexes
 
 - `raw_orderbook_snapshots`: `(market_ticker, fetched_at)` composite; individual indexes on `fetched_at` and `market_ticker` as defined in the model.
 - `research_feature_rows`: `(split_version, feature_version)`; ticker / cluster / `fetched_at` indexes per migration **`0002_feature_rows`**.
+- `backtest_runs`: `created_at`, `(split_version, feature_version, backtest_version)` per **`0003_backtest_runs`**.
+- `backtest_trades`: `run_id` index per **`0003_backtest_runs`**.
 
 ## Migrations (v0.5.2+; frozen baseline; v0.6 feature table)
 
 **Alembic** is the supported mechanism for **changing** the schema over time. Revisions live under `alembic/versions/`; `alembic/env.py` still exposes `Base.metadata` for **autogenerate** comparisons only. Run **`python scripts/db_migrate.py`** (requires `DATABASE_URL`) to apply `alembic upgrade head`.
 
 **Frozen revision files:** each committed migration should contain **explicit operations** (`op.create_table`, `op.add_column`, …) so a given revision id always means the same DDL. The baseline **`0001_initial_schema`** is **frozen explicit DDL**; it does **not** call `Base.metadata.create_all`. **Do not** add new migrations that delegate upgrades to `create_all` for production paths — use incremental, reviewable DDL (or autogenerate + edit) per change.
+
+**Revision `0003_backtest_runs` (v0.7):** adds **`backtest_runs`** and **`backtest_trades`** with explicit DDL and JSON columns via the same `json_type()` pattern.
 
 **Revision `0002_feature_rows` (v0.6):** adds **`research_feature_rows`** with explicit DDL (JSON column uses the same `json_type()` JSON/JSONB pattern as **`0001`**).
 

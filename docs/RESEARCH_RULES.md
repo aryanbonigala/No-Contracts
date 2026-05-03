@@ -40,4 +40,12 @@ These rules exist to keep the Kalshi **NO carry** study statistically honest and
 19. **Frozen feature versions:** once a `feature_version` feeds honest model or strategy work, do not silently overwrite those rows; bump **`feature_version`** when definitions change.
 20. **Not a strategy:** engineered rows include NO-carry *scaffolding* (prices, spreads, fee-adjusted breakeven probabilities) but **no** realized edge, PnL, or order simulation.
 
+## Read-only backtesting (v0.7)
+
+21. **Train + validation by default:** `scripts/run_backtest.py` mirrors feature export defaults — **test is excluded** unless **`--include-test`**. Treat that flag like a sealed envelope: document why it was used.
+22. **No peeking for tuning:** iterate thresholds and rules on **train / validation** only. After you have looked at **test** results for a config, **do not** retroactively tune that same `backtest_version` to fit test — bump **`backtest_version`** and treat prior numbers as exploratory if you change rules after seeing test.
+23. **Frozen inputs:** tie every run to explicit **`feature_version`** and **`split_version`**. Do not silently mix feature definitions in one reported run.
+24. **Labels only for scoring:** **`label_*`** fields (e.g. `label_market_result`) may inform **hypothetical** PnL after resolution; they must **not** be fed as inputs to entry rules in this baseline (no outcome leakage into “features” at decision time).
+25. **Honest reporting:** the harness does **not** imply profitability; missing labels yield **unscored** trades, not fabricated PnL.
+
 For engineering context, see `ARCHITECTURE.md`. For table-level details, see `DATA_SCHEMA.md`.

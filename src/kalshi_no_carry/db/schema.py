@@ -210,3 +210,48 @@ class ResearchFeatureRow(Base):
     label_market_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class BacktestRun(Base):
+    """Persisted metadata + summary for one read-only backtest run (v0.7+)."""
+
+    __tablename__ = "backtest_runs"
+    __table_args__ = (
+        Index("ix_backtest_runs_created_at", "created_at"),
+        Index("ix_backtest_runs_versions", "split_version", "feature_version", "backtest_version"),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    backtest_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    strategy_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    split_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    feature_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_json: Mapped[dict] = mapped_column(_JSON, nullable=False)
+    summary_json: Mapped[dict] = mapped_column(_JSON, nullable=False)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    test_included: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class BacktestTrade(Base):
+    """Per-trade rows for a backtest run (hypothetical entries; not live orders)."""
+
+    __tablename__ = "backtest_trades"
+    __table_args__ = (Index("ix_backtest_trades_run_id", "run_id"),)
+
+    run_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("backtest_runs.run_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    trade_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    snapshot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    market_ticker: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    cluster_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    split_name: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    no_ask_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fee_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gross_pnl_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    net_pnl_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    scored: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    unscored_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_json: Mapped[dict] = mapped_column(_JSON, nullable=False)
