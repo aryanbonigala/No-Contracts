@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.engine import Engine
 
-from kalshi_no_carry.collectors.common import safe_error_message
+from kalshi_no_carry.collectors.common import normalize_collector_summary, safe_error_message
 from kalshi_no_carry.research.backtest_config import (
     STRATEGY_NO_CARRY_PRICE_THRESHOLD_V0,
     BacktestConfig,
@@ -298,13 +298,18 @@ def run_research_pipeline(
                         engine,
                         list(config.market_tickers),
                     )
+                    nd = normalize_collector_summary(ob, "collect_orderbooks")
                     stages["collect_orderbooks"] = {
                         "stage_name": "collect_orderbooks",
                         "enabled": True,
-                        "success": ob.success,
-                        "warnings": list(ob.errors),
-                        "orderbooks": ob.to_public_dict(),
+                        "success": nd["success"],
+                        "warnings": list(nd["errors"]) + list(nd["warnings"]),
+                        "orderbooks": nd["detail"],
                     }
+                    if "records_seen" in nd:
+                        stages["collect_orderbooks"]["records_seen"] = nd["records_seen"]
+                    if "records_written" in nd:
+                        stages["collect_orderbooks"]["records_written"] = nd["records_written"]
                 else:
                     ob = collect_orderbooks_for_active_markets(
                         kalshi_client,
@@ -312,13 +317,18 @@ def run_research_pipeline(
                         limit=lim,
                         max_pages=config.collect_max_pages,
                     )
+                    nd = normalize_collector_summary(ob, "collect_orderbooks")
                     stages["collect_orderbooks"] = {
                         "stage_name": "collect_orderbooks",
                         "enabled": True,
-                        "success": ob.success,
-                        "warnings": list(ob.errors),
-                        "orderbooks": ob.to_public_dict(),
+                        "success": nd["success"],
+                        "warnings": list(nd["errors"]) + list(nd["warnings"]),
+                        "orderbooks": nd["detail"],
                     }
+                    if "records_seen" in nd:
+                        stages["collect_orderbooks"]["records_seen"] = nd["records_seen"]
+                    if "records_written" in nd:
+                        stages["collect_orderbooks"]["records_written"] = nd["records_written"]
                 if not stages["collect_orderbooks"]["success"]:
                     failed_stage = "collect_orderbooks"
             except Exception as exc:

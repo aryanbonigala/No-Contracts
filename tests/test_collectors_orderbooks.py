@@ -106,6 +106,7 @@ def test_collect_orderbooks_for_active_markets_chain():
             c, engine, limit=50, max_pages=1, status="open", source="t"
         )
         assert out.markets.success
+        assert out.success
         assert out.markets.records_written == 2
         assert out.orderbooks.snapshots_inserted == 2
         with Session() as s:

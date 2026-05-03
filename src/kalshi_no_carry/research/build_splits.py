@@ -33,8 +33,13 @@ class SplitVersionExistsError(Exception):
     def __init__(self, split_version: str) -> None:
         self.split_version = split_version
         super().__init__(
-            f"strategy_splits already has rows for split_version={split_version!r}; "
-            "pass overwrite=True for a controlled rebuild"
+            f"strategy_splits already has rows for split_version={split_version!r}. "
+            "For a controlled rebuild use run_research_pipeline.py --overwrite-splits "
+            "or scripts/build_splits.py --overwrite. "
+            "Downstream materializations may need --delete-existing-labels / "
+            "--delete-existing-features if you change split membership and reuse "
+            "the same label/feature versions. "
+            "Alternatively use a fresh DATABASE_URL or disposable SQLite file."
         )
 
 

@@ -177,3 +177,112 @@ def test_pipeline_stage_keys_order(memory_engine) -> None:
     assert names.index("build_splits") < names.index("build_labels")
     assert names.index("build_labels") < names.index("build_features")
     assert names.index("build_features") < names.index("audit")
+
+
+def test_pipeline_collect_orderbooks_with_legacy_summary_no_success_attr(memory_engine) -> None:
+    """Regression: ActiveMarketsOrderbookSummary once lacked .success and crashed the pipeline."""
+    cfg = ResearchPipelineConfig(
+        collect_orderbooks=True,
+        build_splits=False,
+        build_labels=False,
+        build_features=False,
+        run_audit=False,
+    )
+
+    class _StubClient:
+        pass
+
+    with patch(
+        "kalshi_no_carry.collectors.orderbooks.collect_orderbooks_for_active_markets",
+        return_value=LegacyNoRootSuccess(),
+    ) as co:
+        out = run_research_pipeline(memory_engine, cfg, kalshi_client=_StubClient())
+    co.assert_called_once()
+    st = out["stages"]["collect_orderbooks"]
+    assert st["enabled"] is True
+    assert st["success"] is True
+    assert st.get("records_seen") == 12
+    assert st.get("records_written") == 4
+    assert out["failed_stage"] is None
+
+
+def test_pipeline_collect_orderbooks_dict_summary(memory_engine) -> None:
+    cfg = ResearchPipelineConfig(
+        collect_orderbooks=True,
+        build_splits=False,
+        build_labels=False,
+        build_features=False,
+        run_audit=False,
+    )
+
+    class _StubClient:
+        pass
+
+    fake = {
+        "success": True,
+        "errors": [],
+        "tickers_attempted": 4,
+        "snapshots_inserted": 4,
+    }
+    with patch(
+        "kalshi_no_carry.collectors.orderbooks.collect_orderbooks_for_active_markets",
+        return_value=fake,
+    ):
+        out = run_research_pipeline(memory_engine, cfg, kalshi_client=_StubClient())
+    st = out["stages"]["collect_orderbooks"]
+    assert st["success"] is True
+    assert st["records_seen"] == 4
+    assert st["records_written"] == 4
+
+
+def test_pipeline_collect_orderbooks_dataclass_with_errors(memory_engine) -> None:
+    from kalshi_no_carry.collectors.common import OrderbookCollectionSummary, utc_now
+
+    cfg = ResearchPipelineConfig(
+        collect_orderbooks=True,
+        build_splits=False,
+        build_labels=False,
+        build_features=False,
+        run_audit=False,
+    )
+
+    class _StubClient:
+        pass
+
+    bad = OrderbookCollectionSummary(
+        name="t",
+        started_at=utc_now(),
+        finished_at=utc_now(),
+        tickers_attempted=1,
+        snapshots_inserted=0,
+        errors=["ticker: fail"],
+        success=False,
+    )
+    with patch(
+        "kalshi_no_carry.collectors.orderbooks.collect_orderbooks_for_active_markets",
+        return_value=bad,
+    ):
+        out = run_research_pipeline(memory_engine, cfg, kalshi_client=_StubClient())
+    assert out["success"] is False
+    assert out["failed_stage"] == "collect_orderbooks"
+    assert out["stages"]["collect_orderbooks"]["success"] is False
+
+
+class LegacyNoRootSuccess:
+    """Same shape as tests in test_collector_summary_normalize (no root success)."""
+
+    def to_public_dict(self):
+        return {
+            "markets": {
+                "success": True,
+                "errors": [],
+                "records_seen": 10,
+                "records_written": 2,
+            },
+            "orderbooks": {
+                "success": True,
+                "errors": [],
+                "tickers_attempted": 2,
+                "snapshots_inserted": 2,
+            },
+        }

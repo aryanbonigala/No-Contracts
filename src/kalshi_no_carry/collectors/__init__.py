@@ -4,6 +4,7 @@ from kalshi_no_carry.collectors.common import (
     ActiveMarketsOrderbookSummary,
     CollectorSummary,
     OrderbookCollectionSummary,
+    normalize_collector_summary,
 )
 from kalshi_no_carry.collectors.events import collect_events
 from kalshi_no_carry.collectors.markets import collect_markets
@@ -20,4 +21,5 @@ __all__ = [
     "collect_markets",
     "collect_orderbooks_for_markets",
     "collect_orderbooks_for_active_markets",
+    "normalize_collector_summary",
 ]

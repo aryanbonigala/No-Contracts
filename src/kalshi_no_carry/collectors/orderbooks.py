@@ -115,6 +115,4 @@ def collect_orderbooks_for_active_markets(
         fail_fast=fail_fast,
         sleep_seconds=sleep_seconds,
     )
-    if not msum.success:
-        osum.success = False
     return ActiveMarketsOrderbookSummary(markets=msum, orderbooks=osum)

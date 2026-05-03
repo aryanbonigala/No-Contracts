@@ -70,4 +70,8 @@ These rules exist to keep the Kalshi **NO carry** study statistically honest and
 37. **Dry-run is non-mutating:** `scripts/run_research_report.py --dry-run` must **not** alter **`research_market_labels`**, **`research_feature_rows`**, **`strategy_splits`**, clusters, **`backtest_runs`**, **`backtest_trades`**, or run **migrations** / **`create_all`**. It is safe to run repeatedly against a shared research database.
 38. **Report previews are safe:** use **`--dry-run`** for repeated “what is the dataset state?” checks; only a **non–dry-run** report run may request pipeline materialization and write artifacts under **`reports/`**.
 
+## Collectors and CI (v0.11)
+
+39. **No live Kalshi in default tests:** collector and pipeline **integration tests** must **mock** HTTP / client calls or use **fakes**. The default **`pytest`** suite **must not** require network access or Kalshi availability. Optional manual “public data smoke” runs are documented in **`README.md`** only.
+
 For engineering context, see `ARCHITECTURE.md`. For table-level details, see `DATA_SCHEMA.md`.

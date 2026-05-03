@@ -1,14 +1,14 @@
-# Kalshi NO Carry (v0.10 — research audit reports + readiness; read-only)
+# Kalshi NO Carry (v0.11 — collector/pipeline summary integration; read-only)
 
 Production-oriented **research** codebase for testing a statistical thesis on Kalshi binary markets:
 
 **Thesis (informal):** there may be edge in buying high-confidence **NO** contracts when the market-implied NO price is below the "true" NO probability after adjusting for fees, spread, ambiguity risk, and correlated event risk.
 
-This repository is **v0.10.0** (`Kalshi_NO_Carry_v0.10_RealDataPipelineAuditReport`). **v0.10** adds **`research/reporting.py`** and **`scripts/run_research_report.py`**: run the stored-data pipeline, compute a **readiness verdict**, and write **`report.md`** + **`summary.json`** under `reports/` (or `--output-dir`). This is the **preferred handoff artifact** after labels/features exist — it does **not** prove trading edge. **v0.9** pipeline orchestration, **v0.8** labeling, and **v0.7** backtests remain below.
+This repository is **v0.11.0** (`Kalshi_NO_Carry_v0.11_CollectorPipelineIntegrationFix`). **v0.11** normalizes **collector summaries** before pipeline JSON output so **orderbook** collection (`ActiveMarketsOrderbookSummary` and friends) always exposes a consistent **`success`** / counts interface — fixing **`run_research_pipeline.py`** crashes when **only nested** summaries had **`success`**. **v0.10** reporting + dry-run safety, **v0.9** pipeline orchestration, **v0.8** labeling, and **v0.7** backtests remain below.
 
 ## Safety / scope
 
-- **Read-only vs Kalshi:** all ingestion uses public `GET` (and optional authenticated read) paths only; no order placement.
+- **Read-only vs Kalshi:** all ingestion uses public `GET` (and optional authenticated read) paths only; **collectors never place orders** — they only persist read-only market and orderbook snapshots into your database.
 - **Backtests:** consume **frozen** `research_feature_rows` only; they **never** submit orders or move balances.
 - **Labels:** normalized outcomes live in **`research_market_labels`** (and optionally on feature rows via **`--label-version`**) for **scoring and coverage only** — not for pricing or entry-feature computation.
 - **Secrets:** never commit `.env`, keys, or passwords. Scripts print **summary JSON** only — no raw `DATABASE_URL`, no API keys.
@@ -64,6 +64,19 @@ pip install -e ".[dev]"
 python scripts/db_revision.py "describe change"
 python scripts/db_revision.py "describe change" --autogenerate
 ```
+
+## Local public-data smoke (optional; network + Kalshi)
+
+On a **disposable** SQLite file (schema already migrated or use **`--migrate --create-tables`** on the pipeline as needed):
+
+```bash
+export DATABASE_URL="sqlite+pysqlite:///./research.db"
+python scripts/run_research_pipeline.py --collect-markets --collect-orderbooks --limit 25
+```
+
+- Collectors issue **read-only HTTP** to Kalshi public market endpoints and upsert **`raw_*`** rows only.
+- **Repeat runs:** if **`strategy_splits`** already exists for your default **`--split-version`**, **`build_splits`** fails with an explicit message. Use **`--overwrite-splits`** to rebuild splits for that version, and consider **`--delete-existing-labels`** / **`--delete-existing-features`** when re-materializing downstream artifacts for the same label/feature versions. **Nothing** is auto-deleted unless you pass those flags.
+- Normal **pytest** does not call Kalshi; use **mocks** and SQLite only.
 
 ## Run collectors (requires `DATABASE_URL` + network to Kalshi)
 
@@ -198,6 +211,6 @@ Optional Postgres smoke: set `RUN_DB_INTEGRATION_TESTS=1` and `DATABASE_URL`.
 - [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) — tables including `research_feature_rows`, `research_market_labels`, `backtest_runs`, `backtest_trades`
 - [`docs/RESEARCH_RULES.md`](docs/RESEARCH_RULES.md) — leakage + sealed test + feature + label + backtest rules
 
-## Deferred (not in v0.10)
+## Deferred (not in v0.11)
 
-**Probability models**, **strategy optimization**, **order placement**, **portfolio**, **live execution** — v0.10 adds **reporting and readiness** only; modeling and trading remain out of scope.
+**Probability models**, **strategy optimization**, **order placement**, **portfolio**, **live execution** — v0.11 completes **collector ↔ pipeline summary** normalization; modeling and trading remain out of scope.
