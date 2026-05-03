@@ -52,12 +52,22 @@ These rules exist to keep the Kalshi **NO carry** study statistically honest and
 25. **Unknown beats wrong:** if API fields are missing, conflicting, or ambiguous, normalize to **`unknown`** (or **`void`** only when status/result clearly indicates cancel/void). Never infer winners from **title**, subtitle, or price history in `research/outcomes.py`.
 26. **Versioned extraction:** each row in **`research_market_labels`** carries **`label_version`**. Changing extraction rules requires a **new** `label_version`; old rows stay for audit.
 27. **Scoring only on feature rows:** **`label_*`** columns (including merged **`outcome_label_version`**) exist for **backtests and coverage metrics**, not for candidate selection or executable quote math.
-28. **Sealed test:** **`build_labels`**, **`audit_research_dataset`**, **`build_features`**, **`run_backtest`**, and **`run_research_pipeline`** all treat the test split as **opt-in** (explicit flags), consistent with v0.6–v0.7.
+28. **Sealed test:** **`build_labels`**, **`audit_research_dataset`**, **`build_features`**, **`run_backtest`**, **`run_research_pipeline`**, and **`run_research_report`** all treat the test split as **opt-in** (explicit flags), consistent with v0.6–v0.7.
 
 ## Research pipeline runner (v0.9)
 
 29. **Orchestration only:** `scripts/run_research_pipeline.py` and `research.pipeline_runner` coordinate **read-only** research steps. They **do not** replace methodology discipline: you must still avoid tuning on the sealed **test** split and must not treat **`next_recommended_action`** as permission to trade.
 30. **No “optimize until test looks good”:** running the pipeline repeatedly with **`--include-test`** to tweak strategy inputs until test metrics improve **voids** honest test claims — the runner cannot detect gaming; reviewers and authors must enforce **RESEARCH_RULES** manually.
 31. **`next_recommended_action`:** heuristic offline hints only (coverage, labels, features). It **must never** suggest **live trading**, execution, or deploying real capital — only research data work or read-only analysis.
+
+## Research audit reports (v0.10)
+
+32. **Summarize train/validation by default:** `report.md` / `summary.json` from **`run_research_report.py`** follow pipeline defaults — **test excluded** unless **`--include-test`**. Use reports for coverage and readiness, not for secret test peeking during iteration.
+33. **Explicit test reports:** a report generated with **`--include-test`** is a **final sealed-evaluation style** artifact — document why it was produced; do **not** tune parameters afterward to “fit” that report without re-splitting and a new protocol.
+34. **No test tuning:** reports **must not** be used to adjust strategy thresholds or rules specifically to improve **test** metrics; iterate only on train/validation and treat test as locked.
+35. **No live-trading advice:** readiness verdicts and Markdown sections **must never** recommend **live trading** or capital deployment — they describe offline data sufficiency only.
+36. **No phantom edge:** reports **must not** claim exploitable edge; hypothetical backtest PnL is clearly labeled simulation and may be **zero unscored** when labels are missing.
+37. **Dry-run is non-mutating:** `scripts/run_research_report.py --dry-run` must **not** alter **`research_market_labels`**, **`research_feature_rows`**, **`strategy_splits`**, clusters, **`backtest_runs`**, **`backtest_trades`**, or run **migrations** / **`create_all`**. It is safe to run repeatedly against a shared research database.
+38. **Report previews are safe:** use **`--dry-run`** for repeated “what is the dataset state?” checks; only a **non–dry-run** report run may request pipeline materialization and write artifacts under **`reports/`**.
 
 For engineering context, see `ARCHITECTURE.md`. For table-level details, see `DATA_SCHEMA.md`.

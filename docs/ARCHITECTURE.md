@@ -1,10 +1,10 @@
-# Architecture (v0.9 — collectors + pipeline runner + splits + features + labels + audit + backtest + Alembic)
+# Architecture (v0.10 — collectors + pipeline + reporting + splits + features + labels + audit + backtest + Alembic)
 
 ## Purpose
 
 This codebase supports **offline research** for a Kalshi thesis around **NO** contracts: identify potential mispricing after costs (fees, spread), ambiguity, and correlation — **without live trading**.
 
-**v0.5** adds **deterministic clustering and splits** on top of **v0.4** collectors. **v0.6** adds **`research_feature_rows`**. **v0.7** adds the **read-only backtest harness** (`backtest_runs` / `backtest_trades`). **v0.8** adds **`research_market_labels`** from **`raw_markets`** (`research/outcomes.py`), optional merge into feature rows via **`--label-version`**, and **`research/dataset_audit.py`** for coverage metrics. **v0.9** adds **`research/pipeline_runner.py`**: ordered orchestration (optional migrate/collectors, splits, labels, features with `label_version`, audit, optional backtest) with one safe JSON report. Labels support **scoring and audits**, not pricing-feature inputs.
+**v0.5** adds **deterministic clustering and splits** on top of **v0.4** collectors. **v0.6** adds **`research_feature_rows`**. **v0.7** adds the **read-only backtest harness** (`backtest_runs` / `backtest_trades`). **v0.8** adds **`research_market_labels`** from **`raw_markets`** (`research/outcomes.py`), optional merge into feature rows via **`--label-version`**, and **`research/dataset_audit.py`** for coverage metrics. **v0.9** adds **`research/pipeline_runner.py`**: ordered orchestration (optional migrate/collectors, splits, labels, features with `label_version`, audit, optional backtest) with one safe JSON summary. **v0.10** adds **`research/reporting.py`**: Markdown + readiness **`compute_research_readiness`** from pipeline outputs (`scripts/run_research_report.py`). Labels support **scoring and audits**, not pricing-feature inputs.
 
 ## Process boundaries
 
@@ -91,6 +91,34 @@ flowchart TD
   RPR --> BT[research.backtest_no_carry]
 ```
 
+**v0.10 reporting:** **`run_research_pipeline`** summary → **`research.reporting.build_research_audit_report`** / **`compute_research_readiness`** → `report.md` + `summary.json` (via **`scripts/run_research_report.py`** when not **`--dry-run`**). Readiness is **conservative** and **does not** assert tradable edge.
+
+**`--dry-run` preview:** does **not** invoke **`run_research_pipeline`**; it calls **`audit_research_dataset`** (read-only) and reporting helpers on a **synthetic in-memory** pipeline summary so no report files or DB writes occur. Write-oriented CLI flags are **ignored** and listed in stdout JSON as **`ignored_write_flags`**.
+
+```mermaid
+flowchart LR
+  subgraph normal [run_research_report non-dry-run]
+    RPR[run_research_pipeline]
+    SUM[pipeline summary dict]
+    RPT[research.reporting]
+    MD[report.md]
+    JS[summary.json]
+    RPR --> SUM
+    SUM --> RPT
+    RPT --> MD
+    RPT --> JS
+  end
+  subgraph preview [run_research_report --dry-run]
+    AUD[audit_research_dataset]
+    SYN[synthetic preview summary]
+    RPT2[research.reporting]
+    STD[stdout only]
+    AUD --> SYN
+    SYN --> RPT2
+    RPT2 --> STD
+  end
+```
+
 ## Modules (current)
 
 | Path | Responsibility today |
@@ -109,9 +137,11 @@ flowchart TD
 | `kalshi_no_carry.research.dataset_audit` | `audit_research_dataset` coverage / join diagnostics |
 | `kalshi_no_carry.research.backtest_config` | Versioned `BacktestConfig` (Pydantic) for read-only runs |
 | `kalshi_no_carry.research.pipeline_runner` | v0.9 **`ResearchPipelineConfig`**, **`run_research_pipeline`**, **`recommend_next_action`** |
+| `kalshi_no_carry.research.reporting` | v0.10 **`build_research_audit_report`**, **`compute_research_readiness`**, table helpers |
 | `kalshi_no_carry.research.backtest_no_carry` | Candidate selection, `score_no_trade`, summaries; **`run_no_carry_backtest_persisted`** |
 | `scripts/build_splits.py` | CLI: materialize clusters + splits (requires `DATABASE_URL`) |
 | `scripts/run_research_pipeline.py` | CLI: full pipeline, JSON summary (test excluded by default) |
+| `scripts/run_research_report.py` | CLI: pipeline + Markdown/JSON audit report + readiness; **`--dry-run`** = audit-only preview, no files / no DB writes |
 | `scripts/build_labels.py` | CLI: populate `research_market_labels` |
 | `scripts/build_features.py` | CLI: build / persist `research_feature_rows` (test excluded by default) |
 | `scripts/audit_research_dataset.py` | CLI: JSON dataset audit (test excluded by default) |

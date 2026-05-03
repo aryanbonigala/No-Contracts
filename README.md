@@ -1,10 +1,10 @@
-# Kalshi NO Carry (v0.9 — end-to-end research pipeline runner; read-only)
+# Kalshi NO Carry (v0.10 — research audit reports + readiness; read-only)
 
 Production-oriented **research** codebase for testing a statistical thesis on Kalshi binary markets:
 
 **Thesis (informal):** there may be edge in buying high-confidence **NO** contracts when the market-implied NO price is below the "true" NO probability after adjusting for fees, spread, ambiguity risk, and correlated event risk.
 
-This repository is **v0.9.0** (`Kalshi_NO_Carry_v0.9_EndToEndResearchPipelineRunner`). **v0.9** adds **`research/pipeline_runner.py`** and **`scripts/run_research_pipeline.py`**: a **single orchestrated command** that runs migrations (optional), **opt-in** Kalshi collectors, cluster/split build, outcome labels, feature rows (with **`label_version`**), dataset audit, and an optional read-only backtest — printing **one JSON summary** (no secrets). **Default behavior is stored-DB only** (no network). **`v0.8`** labeling + audit and **`v0.7`** backtests remain as documented below.
+This repository is **v0.10.0** (`Kalshi_NO_Carry_v0.10_RealDataPipelineAuditReport`). **v0.10** adds **`research/reporting.py`** and **`scripts/run_research_report.py`**: run the stored-data pipeline, compute a **readiness verdict**, and write **`report.md`** + **`summary.json`** under `reports/` (or `--output-dir`). This is the **preferred handoff artifact** after labels/features exist — it does **not** prove trading edge. **v0.9** pipeline orchestration, **v0.8** labeling, and **v0.7** backtests remain below.
 
 ## Safety / scope
 
@@ -17,8 +17,8 @@ This repository is **v0.9.0** (`Kalshi_NO_Carry_v0.9_EndToEndResearchPipelineRun
 
 - `src/kalshi_no_carry/collectors/` — `events.py`, `markets.py`, `orderbooks.py`, `common.py`
 - `src/kalshi_no_carry/db/` — schema + repositories
-- `src/kalshi_no_carry/research/` — clustering, splits, **`features.py`**, **`feature_dataset.py`**, **`outcomes.py`**, **`dataset_audit.py`**, **`backtest_config.py`**, **`backtest_no_carry.py`**, `build_splits.py`
-- `scripts/` — collectors, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`run_research_pipeline.py`**, **`run_backtest.py`**, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
+- `src/kalshi_no_carry/research/` — clustering, splits, **`features.py`**, **`feature_dataset.py`**, **`outcomes.py`**, **`dataset_audit.py`**, **`pipeline_runner.py`**, **`reporting.py`**, **`backtest_config.py`**, **`backtest_no_carry.py`**, `build_splits.py`
+- `scripts/` — collectors, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, **`run_backtest.py`**, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
 - `alembic/` — versioned DDL (see **Database setup** below)
 - `tests/` — fakes + SQLite in-memory (**no live Kalshi or Postgres required** for default pytest)
 
@@ -34,7 +34,7 @@ pip install -e ".[dev]"
 ## Configuration
 
 - **Kalshi:** `KALSHI_BASE_URL` (full `…/trade-api/v2`), optional auth env vars — see `.env.example`.
-- **Database:** **`DATABASE_URL` is required** for collector scripts, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`run_research_pipeline.py`**, and **`run_backtest.py`** (Postgres recommended on a VM; `scripts/check_env.py` shows a **redacted** preview). **Offline unit tests** use SQLite in-memory and do not need `DATABASE_URL`.
+- **Database:** **`DATABASE_URL` is required** for collector scripts, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, and **`run_backtest.py`** (Postgres recommended on a VM; `scripts/check_env.py` shows a **redacted** preview). **Offline unit tests** use SQLite in-memory and do not need `DATABASE_URL`.
 
 ### Database setup (two options)
 
@@ -150,6 +150,26 @@ python scripts/run_research_pipeline.py --collect-markets --collect-orderbooks -
 python scripts/run_research_pipeline.py --include-test --run-backtest   # sealed test — document why
 ```
 
+## Research audit report (v0.10; requires `DATABASE_URL`)
+
+After labels and features are built, generate a **Markdown + JSON** bundle for humans and tools:
+
+```bash
+python scripts/run_research_report.py
+python scripts/run_research_report.py --dry-run
+python scripts/run_research_report.py --run-backtest
+python scripts/run_research_report.py --migrate --run-backtest
+python scripts/run_research_report.py --output-dir reports/local-smoke --run-backtest
+python scripts/run_research_report.py --include-test --run-backtest
+```
+
+- **Outputs (non–`--dry-run`):** `reports/<timestamp>/` or `reports/<--report-name>/` containing **`summary.json`** (pretty-printed, sorted keys) and **`report.md`**. Stdout prints **safe paths** and **readiness_level** only — no secrets, no raw `DATABASE_URL`.
+- **`--dry-run` stdout:** JSON includes **`dry_run`**, **`files_written`:** false, **`database_writes_performed`:** false, **`ignored_write_flags`**, and **`warnings`** (no artifact directory created).
+- **Default:** stored-data pipeline only (**no Kalshi** collectors in this script). **Test split excluded** unless **`--include-test`**.
+- **`--dry-run`:** **read-only preview** — does **not** write `summary.json` / `report.md`, does **not** run migrations or `create_all`, and does **not** mutate research tables (no splits, labels, features, or persisted backtest rows). It runs **`audit_research_dataset`** only (unless **`--skip-audit`**) against the current DB and prints readiness + Markdown-like content to stdout. **Write-oriented flags** (`--migrate`, `--create-tables`, `--overwrite-splits`, `--delete-existing-labels`, `--delete-existing-features`, pipeline stages that would materialize or persist backtests) are **ignored** with warnings; stdout JSON lists them under **`ignored_write_flags`**.
+- **Git / sharing:** do **not** commit reports if they embed sensitive local paths, operational notes, or anything that could expose credentials. Treat reports as **local artifacts** unless redacted.
+- **Readiness:** the `readiness` object in **`summary.json`** (from **`compute_research_readiness`**) uses **fixed conservative thresholds** (see `research/reporting.py`); it does **not** prove edge. **Live trading** is never recommended.
+
 ## Run read-only backtest (requires `DATABASE_URL`, no Kalshi)
 
 **Default:** **train + validation** feature rows only — **test is excluded** unless **`--include-test`**. **Hypothetical PnL** is computed **only when** `label_market_result` (and friends) are present on feature rows; missing labels yield **unscored** trades — the harness **does not** invent outcomes.
@@ -174,10 +194,10 @@ Optional Postgres smoke: set `RUN_DB_INTEGRATION_TESTS=1` and `DATABASE_URL`.
 
 ## Documentation
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — ingestion + v0.9 pipeline + splits + features + labels + audit + backtest harness
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — ingestion + pipeline + **reporting** + splits + features + labels + audit + backtest harness
 - [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) — tables including `research_feature_rows`, `research_market_labels`, `backtest_runs`, `backtest_trades`
 - [`docs/RESEARCH_RULES.md`](docs/RESEARCH_RULES.md) — leakage + sealed test + feature + label + backtest rules
 
-## Deferred (not in v0.9)
+## Deferred (not in v0.10)
 
-**Probability models**, **strategy optimization**, **order placement**, **portfolio**, **live execution** — v0.9 adds **orchestration** only; modeling and trading remain out of scope.
+**Probability models**, **strategy optimization**, **order placement**, **portfolio**, **live execution** — v0.10 adds **reporting and readiness** only; modeling and trading remain out of scope.

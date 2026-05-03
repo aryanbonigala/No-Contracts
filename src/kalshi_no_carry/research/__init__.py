@@ -1,1 +1,1 @@
-"""Research utilities: clustering, splits, features, labels, audit, backtest, end-to-end pipeline runner (v0.9)."""
+"""Research utilities: clustering, splits, features, labels, audit, pipeline runner, audit reports, backtest (v0.10)."""
