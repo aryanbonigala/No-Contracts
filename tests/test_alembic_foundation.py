@@ -86,7 +86,9 @@ def test_alembic_heads_runs_without_database_url() -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "0001_initial_schema" in proc.stdout
+    out = proc.stdout
+    assert "0002_feature_rows" in out
+    assert (ROOT / "alembic" / "versions" / "0001_initial_schema.py").is_file()
 
 
 def test_db_migrate_exits_when_database_url_missing() -> None:
@@ -150,10 +152,14 @@ def test_alembic_upgrade_sqlite_file_creates_tables(tmp_path: Path, monkeypatch:
     assert "strategy_splits" in names
     assert "event_clusters" in names
     assert "raw_events" in names
+    assert "research_feature_rows" in names
     assert "alembic_version" in names
 
     pk = inspect(eng).get_pk_constraint("strategy_splits")
     assert set(pk["constrained_columns"]) == {"cluster_id", "split_version"}
+
+    pk_fr = inspect(eng).get_pk_constraint("research_feature_rows")
+    assert set(pk_fr["constrained_columns"]) == {"snapshot_id", "split_version", "feature_version"}
 
 
 def test_alembic_sqlite_tables_match_orm_table_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

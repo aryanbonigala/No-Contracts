@@ -33,4 +33,11 @@ These rules exist to keep the Kalshi **NO carry** study statistically honest and
 15. **No future information** in features or labels relative to the modeled decision timestamp (see module docstrings under `research/` when implemented).
 16. **Configuration via environment variables** for credentials and deployment-specific paths — never commit secrets.
 
+## Feature engineering dataset (v0.6)
+
+17. **Causal timestamp:** feature rows use only information available at or before **`fetched_at`** (snapshot time). **Settlement / outcome** must **not** be used as model inputs; when stored for future backtests, use the **`label_`** prefix (e.g. `label_market_result`).
+18. **Sealed test default:** `scripts/build_features.py` includes **train + validation only** by default. The **test** split is included **only** with an explicit **`--include-test`** flag — treat that as a **dangerous / audited** action.
+19. **Frozen feature versions:** once a `feature_version` feeds honest model or strategy work, do not silently overwrite those rows; bump **`feature_version`** when definitions change.
+20. **Not a strategy:** engineered rows include NO-carry *scaffolding* (prices, spreads, fee-adjusted breakeven probabilities) but **no** realized edge, PnL, or order simulation.
+
 For engineering context, see `ARCHITECTURE.md`. For table-level details, see `DATA_SCHEMA.md`.

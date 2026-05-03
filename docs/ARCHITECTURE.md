@@ -1,10 +1,10 @@
-# Architecture (v0.5 — collectors + research split layer; v0.5.2+ Alembic)
+# Architecture (v0.6 — collectors + splits + feature dataset + Alembic)
 
 ## Purpose
 
 This codebase supports **offline research** for a Kalshi thesis around **NO** contracts: identify potential mispricing after costs (fees, spread), ambiguity, and correlation — **without live trading**.
 
-Version **0.5** adds a **deterministic clustering and split** layer on top of **v0.4** read-only collectors. Raw tables feed **event clusters**; clusters receive **train / validation / test** assignments stored in **`strategy_splits`**. Feature pipelines and backtests remain **out of scope** for this release.
+**v0.5** adds **deterministic clustering and splits** on top of **v0.4** collectors. **v0.6** adds a **read-only feature dataset** layer that joins **`raw_orderbook_snapshots`** to **`raw_markets`**, **`event_clusters`**, and **`strategy_splits`**, persisting **versioned** rows in **`research_feature_rows`**. Backtesting and execution remain **out of scope**; features are **deterministic** and exclude the **sealed test** split by default.
 
 ## Process boundaries
 
@@ -37,17 +37,23 @@ flowchart LR
   DB[(Postgres / SQLite)]
   SCH --> DB
   ALB --> DB
+  subgraph features [v0.6]
+    FBUILD[research.feature_dataset]
+    RFR[research_feature_rows]
+  end
   subgraph research_future [Future]
-    FE[features]
     BT[backtest_no_carry]
   end
   DB --> BC
-  DB --> FE
-  DB --> BT
-  FE --> BT
+  DB --> FBUILD
+  FBUILD --> RFR
+  DB --> RFR
+  RFR --> BT
 ```
 
-**v0.5 research split flow:** `raw_events` + `raw_markets` → deterministic **event clustering** → `event_clusters` → chronological **split assignment** → `strategy_splits` (v0.5.1+: composite key `(cluster_id, split_version)` so multiple versions can coexist).
+**v0.5 research split flow:** `raw_events` + `raw_markets` → **event clustering** → `event_clusters` → **split assignment** → `strategy_splits`.
+
+**v0.6 feature flow:** `raw_orderbook_snapshots` → join markets + clusters + `strategy_splits` → **`research.feature_dataset`** → **`research_feature_rows`** (versioned by `feature_version` + `split_version`) → *future* backtest harness.
 
 ## Modules (current)
 
@@ -61,7 +67,10 @@ flowchart LR
 | `kalshi_no_carry.research.event_clustering` | Deterministic cluster keys / ids from raw dict rows |
 | `kalshi_no_carry.research.splits` | Pure chronological partition math (integer % and float fractions) |
 | `kalshi_no_carry.research.build_splits` | `build_event_clusters_from_raw_data`, `assign_chronological_splits` |
+| `kalshi_no_carry.research.features` | Pure deterministic primitives (mids, spreads, time-to-close, NO-carry scaffolding) |
+| `kalshi_no_carry.research.feature_dataset` | `JoinedFeatureSource`, `build_feature_row_from_joined_record`, validation |
 | `scripts/build_splits.py` | CLI: materialize clusters + splits (requires `DATABASE_URL`) |
+| `scripts/build_features.py` | CLI: build / persist `research_feature_rows` (test excluded by default) |
 
 ## Ingestion design
 
@@ -72,7 +81,8 @@ flowchart LR
 
 ## What is explicitly deferred
 
-- Feature pipelines, NO-carry backtester  
+- NO-carry **backtester** (simulation, PnL aggregation)  
+- Model training, strategy **selection** beyond split gating  
 - Order placement, portfolio, execution  
 
 See `DATA_SCHEMA.md` and `RESEARCH_RULES.md`.

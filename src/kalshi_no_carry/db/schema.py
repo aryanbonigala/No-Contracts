@@ -6,6 +6,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -128,3 +129,84 @@ class StrategySplit(Base):
     split_name: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     assigned_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ResearchFeatureRow(Base):
+    """
+    Engineered research row: one orderbook snapshot joined to market, cluster, split.
+
+    Primary key ``(snapshot_id, split_version, feature_version)`` allows multiple
+    feature pipelines and split policies to coexist.
+    """
+
+    __tablename__ = "research_feature_rows"
+    __table_args__ = (Index("ix_research_feature_rows_split_feature", "split_version", "feature_version"),)
+
+    snapshot_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("raw_orderbook_snapshots.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    split_version: Mapped[str] = mapped_column(String(64), primary_key=True)
+    feature_version: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    market_ticker: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    event_ticker: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
+    cluster_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    split_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    fetched_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+    market_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    representative_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    series_ticker: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    market_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    market_close_time: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    market_expiration_time: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    market_settlement_time: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    best_yes_bid_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    best_yes_ask_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    best_no_bid_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    best_no_ask_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    yes_bid_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    yes_ask_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    no_bid_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    no_ask_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    yes_mid_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    no_mid_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    yes_spread_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    no_spread_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    yes_market_crossed_or_locked: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    no_market_crossed_or_locked: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    seconds_to_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    minutes_to_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hours_to_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    days_to_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    snapshot_hour_utc: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    snapshot_day_of_week_utc: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_near_close_1h: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_near_close_6h: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_near_close_24h: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    no_ask_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    no_bid_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    no_cost_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    no_payout_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    gross_no_profit_if_correct_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gross_no_loss_if_wrong_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    required_no_probability_before_fees: Mapped[float | None] = mapped_column(Float, nullable=True)
+    estimated_taker_fee_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    required_no_probability_after_fees: Mapped[float | None] = mapped_column(Float, nullable=True)
+    no_edge_placeholder: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    has_complete_executable_prices: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    missing_price_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_orderbook_depth_summary: Mapped[dict | None] = mapped_column(_JSON, nullable=True)
+
+    label_market_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)

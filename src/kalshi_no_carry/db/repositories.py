@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
-from sqlalchemy import Select, delete, func, select
+from sqlalchemy import Select, case, delete, func, select
 from sqlalchemy.orm import Session
 
 from kalshi_no_carry.db.schema import (
@@ -15,9 +15,11 @@ from kalshi_no_carry.db.schema import (
     RawEvent,
     RawMarket,
     RawOrderbookSnapshot,
+    ResearchFeatureRow,
     StrategySplit,
 )
 from kalshi_no_carry.kalshi_client import derive_executable_prices_from_orderbook
+from kalshi_no_carry.research.feature_dataset import JoinedFeatureSource
 
 
 def _utcnow() -> datetime:
@@ -332,6 +334,151 @@ def list_event_clusters(session: Session) -> list[EventCluster]:
         return (ct, ec.cluster_id)
 
     return sorted(rows, key=_key_sort)
+
+
+def list_orderbook_snapshots_for_feature_building(
+    session: Session,
+    *,
+    split_version: str,
+    include_splits: Sequence[str] = ("train", "validation"),
+    include_test: bool = False,
+    market_tickers: Sequence[str] | None = None,
+    limit: int | None = None,
+) -> list[JoinedFeatureSource]:
+    """
+    Join orderbook snapshots to markets, clusters, and split rows for feature building.
+
+    **Join rule:** ``raw_markets.event_ticker == event_clusters.event_ticker`` (inner).
+    Markets with NULL ``event_ticker`` are omitted. For orphan/fallback clusters with
+    no matching ``event_ticker``, use cluster rebuild tooling; this query does not
+    reconstruct ``cluster_key`` fallbacks.
+
+    Ordering: ``split_name`` (train, validation, test), ``cluster_id``, ``market_ticker``,
+    ``fetched_at``, ``snapshot_id``.
+    """
+    sv = (split_version or "").strip()
+    if not sv:
+        raise ValueError("split_version is required")
+
+    allowed: set[str] = set()
+    for s in include_splits:
+        t = str(s).strip()
+        if t:
+            allowed.add(t)
+    if not include_test:
+        allowed.discard("test")
+    for name in allowed:
+        if name not in ("train", "validation", "test"):
+            raise ValueError(f"invalid split name: {name!r}")
+    if not allowed:
+        return []
+
+    split_order = case(
+        (StrategySplit.split_name == "train", 1),
+        (StrategySplit.split_name == "validation", 2),
+        (StrategySplit.split_name == "test", 3),
+        else_=9,
+    )
+    stmt = (
+        select(RawOrderbookSnapshot, RawMarket, EventCluster, StrategySplit, RawEvent.title)
+        .join(RawMarket, RawOrderbookSnapshot.market_ticker == RawMarket.market_ticker)
+        .join(EventCluster, EventCluster.event_ticker == RawMarket.event_ticker)
+        .join(
+            StrategySplit,
+            (StrategySplit.cluster_id == EventCluster.cluster_id)
+            & (StrategySplit.split_version == sv),
+        )
+        .outerjoin(RawEvent, RawEvent.event_ticker == RawMarket.event_ticker)
+        .where(StrategySplit.split_name.in_(tuple(sorted(allowed))))
+        .order_by(
+            split_order,
+            EventCluster.cluster_id,
+            RawOrderbookSnapshot.market_ticker,
+            RawOrderbookSnapshot.fetched_at,
+            RawOrderbookSnapshot.id,
+        )
+    )
+    if market_tickers:
+        mt = [str(m).strip() for m in market_tickers if m and str(m).strip()]
+        if mt:
+            stmt = stmt.where(RawOrderbookSnapshot.market_ticker.in_(mt))
+    if limit is not None:
+        stmt = stmt.limit(int(limit))
+
+    out: list[JoinedFeatureSource] = []
+    for row in session.execute(stmt).all():
+        ob, rm, ec, sp, ev_title = row[0], row[1], row[2], row[3], row[4]
+        out.append(
+            JoinedFeatureSource(
+                snapshot=ob,
+                market=rm,
+                cluster=ec,
+                split=sp,
+                event_title=ev_title,
+            )
+        )
+    return out
+
+
+def upsert_research_feature_row(session: Session, row: ResearchFeatureRow) -> ResearchFeatureRow:
+    return session.merge(row)
+
+
+def bulk_upsert_research_feature_rows(session: Session, rows: Sequence[ResearchFeatureRow]) -> int:
+    n = 0
+    for r in rows:
+        session.merge(r)
+        n += 1
+    return n
+
+
+def delete_research_feature_rows_for_version(
+    session: Session, *, split_version: str, feature_version: str
+) -> int:
+    res = session.execute(
+        delete(ResearchFeatureRow).where(
+            ResearchFeatureRow.split_version == split_version.strip(),
+            ResearchFeatureRow.feature_version == feature_version.strip(),
+        )
+    )
+    return int(res.rowcount or 0)
+
+
+def count_research_feature_rows(
+    session: Session,
+    *,
+    split_version: str | None = None,
+    feature_version: str | None = None,
+) -> int:
+    stmt = select(func.count()).select_from(ResearchFeatureRow)
+    if split_version is not None:
+        stmt = stmt.where(ResearchFeatureRow.split_version == split_version.strip())
+    if feature_version is not None:
+        stmt = stmt.where(ResearchFeatureRow.feature_version == feature_version.strip())
+    return int(session.scalar(stmt) or 0)
+
+
+def list_research_feature_rows(
+    session: Session,
+    *,
+    split_version: str | None = None,
+    feature_version: str | None = None,
+    limit: int | None = None,
+) -> list[ResearchFeatureRow]:
+    stmt = select(ResearchFeatureRow).order_by(
+        ResearchFeatureRow.split_name,
+        ResearchFeatureRow.cluster_id,
+        ResearchFeatureRow.market_ticker,
+        ResearchFeatureRow.fetched_at,
+        ResearchFeatureRow.snapshot_id,
+    )
+    if split_version is not None:
+        stmt = stmt.where(ResearchFeatureRow.split_version == split_version.strip())
+    if feature_version is not None:
+        stmt = stmt.where(ResearchFeatureRow.feature_version == feature_version.strip())
+    if limit is not None:
+        stmt = stmt.limit(int(limit))
+    return list(session.scalars(stmt).all())
 
 
 def get_existing_strategy_splits(

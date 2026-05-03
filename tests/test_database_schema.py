@@ -5,7 +5,16 @@ from __future__ import annotations
 import pytest
 
 from kalshi_no_carry.database import create_all_tables, create_engine_from_database_url, drop_all_tables
-from kalshi_no_carry.db.schema import ApiFetchLog, Base, EventCluster, RawEvent, RawMarket, RawOrderbookSnapshot, StrategySplit
+from kalshi_no_carry.db.schema import (
+    ApiFetchLog,
+    Base,
+    EventCluster,
+    RawEvent,
+    RawMarket,
+    RawOrderbookSnapshot,
+    ResearchFeatureRow,
+    StrategySplit,
+)
 
 EXPECTED_TABLES = frozenset(
     {
@@ -15,6 +24,7 @@ EXPECTED_TABLES = frozenset(
         "raw_orderbook_snapshots",
         "event_clusters",
         "strategy_splits",
+        "research_feature_rows",
     }
 )
 
@@ -34,6 +44,7 @@ def test_metadata_contains_required_tables() -> None:
         (RawOrderbookSnapshot, "raw_json"),
         (EventCluster, "cluster_id"),
         (StrategySplit, "split_name"),
+        (ResearchFeatureRow, "snapshot_id"),
     ],
 )
 def test_key_columns_exist(model: type, column: str) -> None:
@@ -43,6 +54,11 @@ def test_key_columns_exist(model: type, column: str) -> None:
 def test_strategy_splits_composite_primary_key() -> None:
     pk_cols = {c.key for c in StrategySplit.__table__.primary_key.columns}
     assert pk_cols == {"cluster_id", "split_version"}
+
+
+def test_research_feature_rows_composite_primary_key() -> None:
+    pk_cols = {c.key for c in ResearchFeatureRow.__table__.primary_key.columns}
+    assert pk_cols == {"snapshot_id", "split_version", "feature_version"}
 
 
 def test_create_all_sqlite_memory() -> None:

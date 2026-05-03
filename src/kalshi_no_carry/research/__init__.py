@@ -1,1 +1,1 @@
-"""Research utilities: clustering, splits, features, backtests (mostly stubs in v0.1)."""
+"""Research utilities: clustering, splits, feature dataset, reserved backtest stubs."""

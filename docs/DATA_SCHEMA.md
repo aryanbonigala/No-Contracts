@@ -1,4 +1,4 @@
-# Data schema (v0.3 DDL + v0.4 ingestion + v0.5 clustering/splits)
+# Data schema (v0.3 — v0.6 feature rows)
 
 This document matches the SQLAlchemy models in `kalshi_no_carry.db.schema`. You can create tables in two ways: **`create_all_tables()`** (see `scripts/init_db.py`) for a **fresh** disposable database, or **Alembic** (`scripts/db_migrate.py`, `alembic/versions/`) for **versioned, explicit** schema DDL on databases that hold research data. **Alembic revision files are frozen** — baseline `0001_initial_schema` uses explicit `op.create_table` operations (not `create_all` inside the migration) and matches the ORM’s **JSON / JSONB** convention (see below).
 
@@ -122,15 +122,35 @@ Groups related **raw events** and **raw markets** so **all markets under the sam
 
 The **final test** bucket must remain **sealed** after honest reporting (see `RESEARCH_RULES.md`).
 
+### `research_feature_rows` (v0.6)
+
+Materialized **feature dataset**: one row per **`raw_orderbook_snapshots`** row, joined to **`raw_markets`**, **`event_clusters`**, and **`strategy_splits`**, versioned by **`feature_version`** and **`split_version`**.
+
+| Column | Notes |
+|--------|--------|
+| `snapshot_id`, `split_version`, `feature_version` | Composite PK. `snapshot_id` FK → `raw_orderbook_snapshots.id` (`ON DELETE CASCADE`). |
+| `split_name` | `train` / `validation` / `test` — **excluded from default feature exports** when sealed-test rules apply (see `scripts/build_features.py`). |
+| `fetched_at` | Snapshot time (UTC). |
+| Core fields | Market titles, series/category/status, close/expiration/settlement times, executable bid/ask/sizes, mids/spreads, time-to-close buckets, NO-carry scaffolding (`no_ask_cents`, fee estimates, required probabilities — **not** a live strategy). |
+| `has_complete_executable_prices`, `missing_price_reason` | Data quality. |
+| `raw_orderbook_depth_summary` | Small JSON summary of book depth (not full book). |
+| `label_*` | **`label_market_result`** mirrors `raw_markets.result` for **future** backtest labeling only — **not** used as model inputs in v0.6 builders. |
+| `created_at` | Row materialization time. |
+
+**Versioning:** change **`feature_version`** (e.g. `v0.6_orderbook_snapshot_features`) whenever feature definitions change; multiple versions may coexist for the same snapshot via the composite PK.
+
 ## Indexes
 
 - `raw_orderbook_snapshots`: `(market_ticker, fetched_at)` composite; individual indexes on `fetched_at` and `market_ticker` as defined in the model.
+- `research_feature_rows`: `(split_version, feature_version)`; ticker / cluster / `fetched_at` indexes per migration **`0002_feature_rows`**.
 
-## Migrations (v0.5.2+; frozen baseline; JSONB alignment v0.5.4)
+## Migrations (v0.5.2+; frozen baseline; v0.6 feature table)
 
 **Alembic** is the supported mechanism for **changing** the schema over time. Revisions live under `alembic/versions/`; `alembic/env.py` still exposes `Base.metadata` for **autogenerate** comparisons only. Run **`python scripts/db_migrate.py`** (requires `DATABASE_URL`) to apply `alembic upgrade head`.
 
 **Frozen revision files:** each committed migration should contain **explicit operations** (`op.create_table`, `op.add_column`, …) so a given revision id always means the same DDL. The baseline **`0001_initial_schema`** is **frozen explicit DDL**; it does **not** call `Base.metadata.create_all`. **Do not** add new migrations that delegate upgrades to `create_all` for production paths — use incremental, reviewable DDL (or autogenerate + edit) per change.
+
+**Revision `0002_feature_rows` (v0.6):** adds **`research_feature_rows`** with explicit DDL (JSON column uses the same `json_type()` JSON/JSONB pattern as **`0001`**).
 
 **JSON / JSONB (v0.5.4):** **`0001_initial_schema`** defines JSON-ish columns with the same **`JSON` / `JSONB`** dialect mapping as the ORM (`SQLite` → `JSON`, `PostgreSQL` → `JSONB`), so paths **`init_db` / `create_all`** and **`db_migrate` / `0001`** are intended to match on a fresh database.
 
