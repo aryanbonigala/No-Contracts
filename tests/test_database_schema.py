@@ -14,6 +14,7 @@ from kalshi_no_carry.db.schema import (
     RawMarket,
     RawOrderbookSnapshot,
     ResearchFeatureRow,
+    ResearchMarketLabel,
     StrategySplit,
 )
 
@@ -26,6 +27,7 @@ EXPECTED_TABLES = frozenset(
         "event_clusters",
         "strategy_splits",
         "research_feature_rows",
+        "research_market_labels",
         "backtest_runs",
         "backtest_trades",
     }
@@ -62,6 +64,11 @@ def test_strategy_splits_composite_primary_key() -> None:
 def test_research_feature_rows_composite_primary_key() -> None:
     pk_cols = {c.key for c in ResearchFeatureRow.__table__.primary_key.columns}
     assert pk_cols == {"snapshot_id", "split_version", "feature_version"}
+
+
+def test_research_market_labels_composite_primary_key() -> None:
+    pk_cols = {c.key for c in ResearchMarketLabel.__table__.primary_key.columns}
+    assert pk_cols == {"market_ticker", "label_version"}
 
 
 def test_backtest_trades_composite_primary_key() -> None:

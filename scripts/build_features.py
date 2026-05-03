@@ -20,6 +20,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--split-version", default=_DEFAULT_SPLIT_VERSION)
     p.add_argument("--feature-version", default=_DEFAULT_FEATURE_VERSION)
     p.add_argument(
+        "--label-version",
+        default=None,
+        help="Optional research_market_labels version to merge into feature label columns (scoring/audit only)",
+    )
+    p.add_argument(
         "--include-test",
         action="store_true",
         help="Include rows in the sealed test split (default: train+validation only)",
@@ -59,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         bulk_upsert_research_feature_rows,
         delete_research_feature_rows_for_version,
         list_orderbook_snapshots_for_feature_building,
+        load_market_outcome_labels_by_ticker,
     )
     from kalshi_no_carry.logging_setup import configure_logging
     from kalshi_no_carry.research.feature_dataset import build_feature_row_from_joined_record, validate_feature_row
@@ -88,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         "rows_skipped": 0,
         "missing_price_rows": 0,
         "missing_close_time_rows": 0,
+        "label_version": (str(args.label_version).strip() if args.label_version else None),
         "warnings": warnings,
     }
 
@@ -125,10 +132,26 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 out["rows_seen"] = len(sources)
 
+                label_ver = (str(args.label_version).strip() if args.label_version else None) or None
+                labels_map: dict = {}
+                if label_ver:
+                    tickers = sorted({src.market.market_ticker for src in sources})
+                    labels_map = load_market_outcome_labels_by_ticker(
+                        session, label_version=label_ver, market_tickers=tickers
+                    )
+                    missing = [t for t in tickers if t not in labels_map]
+                    if missing:
+                        warnings.append(
+                            f"label_version={label_ver!r} missing labels for {len(missing)} / {len(tickers)} markets in this batch"
+                        )
+
                 rows: list = []
                 for src in sources:
+                    ol = labels_map.get(src.market.market_ticker) if label_ver else None
                     row = build_feature_row_from_joined_record(
-                        src, feature_version=args.feature_version.strip()
+                        src,
+                        feature_version=args.feature_version.strip(),
+                        outcome_label=ol,
                     )
                     issues = validate_feature_row(row)
                     if issues:

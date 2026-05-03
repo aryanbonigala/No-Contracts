@@ -5,7 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from kalshi_no_carry.db.schema import EventCluster, RawMarket, RawOrderbookSnapshot, ResearchFeatureRow, StrategySplit
+from kalshi_no_carry.db.schema import (
+    EventCluster,
+    RawMarket,
+    RawOrderbookSnapshot,
+    ResearchFeatureRow,
+    ResearchMarketLabel,
+    StrategySplit,
+)
 from kalshi_no_carry.research.features import (
     compute_mid_cents,
     compute_no_carry_fields,
@@ -35,10 +42,17 @@ def build_feature_row_from_joined_record(
     source: JoinedFeatureSource,
     *,
     feature_version: str,
+    outcome_label: ResearchMarketLabel | None = None,
 ) -> ResearchFeatureRow:
     """
     Deterministic feature row at ``snapshot.fetched_at`` using only information
-    available from stored rows (no settlement / outcome as model inputs).
+    knowable from stored rows at snapshot time.
+
+    **Labels:** Orderbook/market structure feeds *features*; outcomes never enter
+    pricing math. When ``outcome_label`` is set, normalized label columns are copied
+    from ``research_market_labels`` (scoring / audit only). When omitted, legacy
+    ``label_market_result = raw_markets.result`` is kept and extended label columns
+    stay unset (v0.6-compatible).
     """
     ob = source.snapshot
     rm = source.market
@@ -75,6 +89,23 @@ def build_feature_row_from_joined_record(
     )
 
     depth = summarize_orderbook_depth(ob.raw_json if isinstance(ob.raw_json, dict) else None)
+
+    if outcome_label is not None:
+        label_market_result = outcome_label.label_market_result
+        label_no_won = outcome_label.label_no_won
+        label_yes_won = outcome_label.label_yes_won
+        label_is_resolved = outcome_label.label_is_resolved
+        label_is_void = outcome_label.label_is_void
+        label_confidence = outcome_label.label_confidence
+        outcome_label_version = outcome_label.label_version
+    else:
+        label_market_result = rm.result
+        label_no_won = None
+        label_yes_won = None
+        label_is_resolved = None
+        label_is_void = None
+        label_confidence = None
+        outcome_label_version = None
 
     return ResearchFeatureRow(
         snapshot_id=ob.id,
@@ -134,7 +165,13 @@ def build_feature_row_from_joined_record(
         has_complete_executable_prices=complete,
         missing_price_reason=miss,
         raw_orderbook_depth_summary=depth,
-        label_market_result=rm.result,
+        label_market_result=label_market_result,
+        label_no_won=label_no_won,
+        label_yes_won=label_yes_won,
+        label_is_resolved=label_is_resolved,
+        label_is_void=label_is_void,
+        label_confidence=label_confidence,
+        outcome_label_version=outcome_label_version,
         created_at=now,
     )
 
@@ -152,4 +189,8 @@ def validate_feature_row(row: ResearchFeatureRow) -> list[str]:
         issues.append("snapshot_id must be positive")
     if row.no_payout_cents < 1:
         issues.append("no_payout_cents must be positive")
+    if row.outcome_label_version and row.label_market_result:
+        allowed = {"yes", "no", "void", "unknown"}
+        if str(row.label_market_result).strip().lower() not in allowed:
+            issues.append("label_market_result must be yes, no, void, or unknown when outcome_label_version is set")
     return issues

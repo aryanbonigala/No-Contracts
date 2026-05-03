@@ -1,10 +1,10 @@
-# Architecture (v0.7 — collectors + splits + feature dataset + read-only backtest + Alembic)
+# Architecture (v0.8 — collectors + splits + features + outcome labels + audit + backtest + Alembic)
 
 ## Purpose
 
 This codebase supports **offline research** for a Kalshi thesis around **NO** contracts: identify potential mispricing after costs (fees, spread), ambiguity, and correlation — **without live trading**.
 
-**v0.5** adds **deterministic clustering and splits** on top of **v0.4** collectors. **v0.6** adds a **read-only feature dataset** layer that joins **`raw_orderbook_snapshots`** to **`raw_markets`**, **`event_clusters`**, and **`strategy_splits`**, persisting **versioned** rows in **`research_feature_rows`**. **v0.7** adds a **read-only backtest harness** that consumes those rows and optionally persists **`backtest_runs`** / **`backtest_trades`** (no live execution). Features and default exports exclude the **sealed test** split; backtests mirror that default.
+**v0.5** adds **deterministic clustering and splits** on top of **v0.4** collectors. **v0.6** adds **`research_feature_rows`**. **v0.7** adds the **read-only backtest harness** (`backtest_runs` / `backtest_trades`). **v0.8** adds **`research_market_labels`** from **`raw_markets`** (`research/outcomes.py`), optional merge into feature rows via **`--label-version`**, and **`research/dataset_audit.py`** for coverage metrics. Labels support **scoring and audits**, not pricing-feature inputs.
 
 ## Process boundaries
 
@@ -61,6 +61,8 @@ flowchart LR
 
 **v0.6 feature flow:** `raw_orderbook_snapshots` → join markets + clusters + `strategy_splits` → **`research.feature_dataset`** → **`research_feature_rows`** (versioned by `feature_version` + `split_version`).
 
+**v0.8 label flow:** **`raw_markets`** → **`research.outcomes`** → **`research_market_labels`** → *(optional)* merge at **`build_features.py`** into **`label_*`** on **`research_feature_rows`** → backtest **scoring** + **`dataset_audit`**.
+
 **v0.7 backtest flow:** **`research_feature_rows`** → **`research.backtest_no_carry`** (select hypothetical NO entries, score vs **`label_*`** only) → **`backtest_runs`** + **`backtest_trades`** → *future* execution / models **not implemented here**.
 
 ## Modules (current)
@@ -77,10 +79,14 @@ flowchart LR
 | `kalshi_no_carry.research.build_splits` | `build_event_clusters_from_raw_data`, `assign_chronological_splits` |
 | `kalshi_no_carry.research.features` | Pure deterministic primitives (mids, spreads, time-to-close, NO-carry scaffolding) |
 | `kalshi_no_carry.research.feature_dataset` | `JoinedFeatureSource`, `build_feature_row_from_joined_record`, validation |
+| `kalshi_no_carry.research.outcomes` | Deterministic `extract_market_outcome_label*`, label builder from `raw_markets` |
+| `kalshi_no_carry.research.dataset_audit` | `audit_research_dataset` coverage / join diagnostics |
 | `kalshi_no_carry.research.backtest_config` | Versioned `BacktestConfig` (Pydantic) for read-only runs |
 | `kalshi_no_carry.research.backtest_no_carry` | Candidate selection, `score_no_trade`, summaries (deterministic) |
 | `scripts/build_splits.py` | CLI: materialize clusters + splits (requires `DATABASE_URL`) |
+| `scripts/build_labels.py` | CLI: populate `research_market_labels` |
 | `scripts/build_features.py` | CLI: build / persist `research_feature_rows` (test excluded by default) |
+| `scripts/audit_research_dataset.py` | CLI: JSON dataset audit (test excluded by default) |
 | `scripts/run_backtest.py` | CLI: load feature rows, run baseline NO-carry rules, optional persist |
 
 ## Ingestion design

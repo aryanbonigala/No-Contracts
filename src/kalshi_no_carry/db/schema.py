@@ -208,7 +208,44 @@ class ResearchFeatureRow(Base):
     raw_orderbook_depth_summary: Mapped[dict | None] = mapped_column(_JSON, nullable=True)
 
     label_market_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    label_no_won: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    label_yes_won: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    label_is_resolved: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    label_is_void: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    label_confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    outcome_label_version: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ResearchMarketLabel(Base):
+    """
+    Versioned deterministic outcome label per ``market_ticker`` (from raw market payloads).
+
+    Composite PK ``(market_ticker, label_version)`` allows multiple extraction policies to coexist.
+    """
+
+    __tablename__ = "research_market_labels"
+    __table_args__ = (Index("ix_research_market_labels_version", "label_version"),)
+
+    market_ticker: Mapped[str] = mapped_column(
+        String(512),
+        ForeignKey("raw_markets.market_ticker", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    label_version: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    label_market_result: Mapped[str] = mapped_column(String(16), nullable=False)
+    label_no_won: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    label_yes_won: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    label_is_resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    label_is_void: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    label_confidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    label_source_field: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    label_source_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    label_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extracted_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_json: Mapped[dict | None] = mapped_column(_JSON, nullable=True)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

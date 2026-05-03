@@ -28,6 +28,25 @@ def compute_backtest_run_id(config: BacktestConfig) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"kalshi-no-carry|backtest|{payload}"))
 
 
+def resolve_label_no_won_for_scoring(row: Mapping[str, Any]) -> bool | None:
+    """
+    Interpret whether NO won for PnL scoring, using explicit label columns when present.
+
+    Never inspects market title text.
+    """
+    if row.get("label_is_void") is True:
+        return None
+    lr = row.get("label_market_result")
+    if lr is not None and str(lr).strip().lower() == "void":
+        return None
+    ln = row.get("label_no_won")
+    if ln is True:
+        return True
+    if ln is False:
+        return False
+    return parse_label_no_won(str(lr).strip() if lr is not None else None)
+
+
 def parse_label_no_won(label_market_result: str | None) -> bool | None:
     """
     Interpret stored ``label_market_result`` (Kalshi market ``result``) for a **NO** position.
@@ -43,7 +62,7 @@ def parse_label_no_won(label_market_result: str | None) -> bool | None:
         return True
     if s in ("yes", "y"):
         return False
-    if s in ("void", "scnd", "canceled", "cancelled", "null", "none"):
+    if s in ("void", "scnd", "canceled", "cancelled", "null", "none", "unknown"):
         return None
     return None
 
@@ -104,7 +123,7 @@ def score_no_trade(candidate_row: Mapping[str, Any], config: BacktestConfig) -> 
         base["unscored_reason"] = "missing_no_ask"
         return base
 
-    won = parse_label_no_won(str(label_raw) if label_raw is not None else None)
+    won = resolve_label_no_won_for_scoring(candidate_row)
     if won is None:
         base["unscored_reason"] = "missing_or_ambiguous_label"
         return base

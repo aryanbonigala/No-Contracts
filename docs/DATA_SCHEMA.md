@@ -1,4 +1,4 @@
-# Data schema (v0.3 — v0.7 feature rows + backtest outputs)
+# Data schema (v0.3 — v0.8 labels + feature rows + backtest outputs)
 
 This document matches the SQLAlchemy models in `kalshi_no_carry.db.schema`. You can create tables in two ways: **`create_all_tables()`** (see `scripts/init_db.py`) for a **fresh** disposable database, or **Alembic** (`scripts/db_migrate.py`, `alembic/versions/`) for **versioned, explicit** schema DDL on databases that hold research data. **Alembic revision files are frozen** — baseline `0001_initial_schema` uses explicit `op.create_table` operations (not `create_all` inside the migration) and matches the ORM’s **JSON / JSONB** convention (see below).
 
@@ -134,10 +134,26 @@ Materialized **feature dataset**: one row per **`raw_orderbook_snapshots`** row,
 | Core fields | Market titles, series/category/status, close/expiration/settlement times, executable bid/ask/sizes, mids/spreads, time-to-close buckets, NO-carry scaffolding (`no_ask_cents`, fee estimates, required probabilities — **not** a live strategy). |
 | `has_complete_executable_prices`, `missing_price_reason` | Data quality. |
 | `raw_orderbook_depth_summary` | Small JSON summary of book depth (not full book). |
-| `label_*` | **`label_market_result`** mirrors `raw_markets.result` for **future** backtest labeling only — **not** used as model inputs in v0.6 builders. |
+| `label_market_result` | Normalized **`yes` / `no` / `void` / `unknown`** when using **`--label-version`**; legacy build may mirror raw `result` string. **Scoring only.** |
+| `label_no_won`, `label_yes_won`, `label_is_resolved`, `label_is_void`, `label_confidence` | Populated when merging **`research_market_labels`** (v0.8+); otherwise usually null. |
+| `outcome_label_version` | Which **`research_market_labels.label_version`** was merged at build time (nullable). |
 | `created_at` | Row materialization time. |
 
 **Versioning:** change **`feature_version`** (e.g. `v0.6_orderbook_snapshot_features`) whenever feature definitions change; multiple versions may coexist for the same snapshot via the composite PK.
+
+### `research_market_labels` (v0.8)
+
+Deterministic, **versioned** outcome snapshot per **`market_ticker`**, extracted from **`raw_markets`** JSON/columns (**`research/outcomes.py`**). Composite PK **`(market_ticker, label_version)`**; FK **`market_ticker`** → **`raw_markets`**.
+
+| Column | Notes |
+|--------|--------|
+| `label_market_result` | `yes` / `no` / `void` / `unknown`. |
+| `label_no_won`, `label_yes_won` | Nullable booleans when unresolved/void. |
+| `label_is_resolved`, `label_is_void` | Flags for coverage metrics. |
+| `label_confidence` | `high` / `medium` / `low`. |
+| `label_source_field`, `label_source_value`, `label_reason` | Audit trail (no title-based inference). |
+| `extracted_at`, `created_at` | UTC timestamps. |
+| `raw_json` | Small provenance excerpt (nullable). |
 
 ### `backtest_runs` (v0.7)
 
@@ -172,7 +188,8 @@ Hypothetical **entries** and scores — **not** live orders. Composite PK **`(ru
 ## Indexes
 
 - `raw_orderbook_snapshots`: `(market_ticker, fetched_at)` composite; individual indexes on `fetched_at` and `market_ticker` as defined in the model.
-- `research_feature_rows`: `(split_version, feature_version)`; ticker / cluster / `fetched_at` indexes per migration **`0002_feature_rows`**.
+- `research_feature_rows`: `(split_version, feature_version)`; `outcome_label_version`; ticker / cluster / `fetched_at` indexes per migrations **`0002`** + **`0004`**.
+- `research_market_labels`: `label_version` index per **`0004_market_outcome_labels`**.
 - `backtest_runs`: `created_at`, `(split_version, feature_version, backtest_version)` per **`0003_backtest_runs`**.
 - `backtest_trades`: `run_id` index per **`0003_backtest_runs`**.
 
@@ -181,6 +198,8 @@ Hypothetical **entries** and scores — **not** live orders. Composite PK **`(ru
 **Alembic** is the supported mechanism for **changing** the schema over time. Revisions live under `alembic/versions/`; `alembic/env.py` still exposes `Base.metadata` for **autogenerate** comparisons only. Run **`python scripts/db_migrate.py`** (requires `DATABASE_URL`) to apply `alembic upgrade head`.
 
 **Frozen revision files:** each committed migration should contain **explicit operations** (`op.create_table`, `op.add_column`, …) so a given revision id always means the same DDL. The baseline **`0001_initial_schema`** is **frozen explicit DDL**; it does **not** call `Base.metadata.create_all`. **Do not** add new migrations that delegate upgrades to `create_all` for production paths — use incremental, reviewable DDL (or autogenerate + edit) per change.
+
+**Revision `0004_market_outcome_labels` (v0.8):** adds **`research_market_labels`** and extends **`research_feature_rows`** with nullable label metadata columns + **`outcome_label_version`**.
 
 **Revision `0003_backtest_runs` (v0.7):** adds **`backtest_runs`** and **`backtest_trades`** with explicit DDL and JSON columns via the same `json_type()` pattern.
 

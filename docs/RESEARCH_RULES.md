@@ -46,6 +46,11 @@ These rules exist to keep the Kalshi **NO carry** study statistically honest and
 22. **No peeking for tuning:** iterate thresholds and rules on **train / validation** only. After you have looked at **test** results for a config, **do not** retroactively tune that same `backtest_version` to fit test — bump **`backtest_version`** and treat prior numbers as exploratory if you change rules after seeing test.
 23. **Frozen inputs:** tie every run to explicit **`feature_version`** and **`split_version`**. Do not silently mix feature definitions in one reported run.
 24. **Labels only for scoring:** **`label_*`** fields (e.g. `label_market_result`) may inform **hypothetical** PnL after resolution; they must **not** be fed as inputs to entry rules in this baseline (no outcome leakage into “features” at decision time).
-25. **Honest reporting:** the harness does **not** imply profitability; missing labels yield **unscored** trades, not fabricated PnL.
+## Outcome labeling (v0.8)
+
+26. **Unknown beats wrong:** if API fields are missing, conflicting, or ambiguous, normalize to **`unknown`** (or **`void`** only when status/result clearly indicates cancel/void). Never infer winners from **title**, subtitle, or price history in `research/outcomes.py`.
+27. **Versioned extraction:** each row in **`research_market_labels`** carries **`label_version`**. Changing extraction rules requires a **new** `label_version`; old rows stay for audit.
+28. **Scoring only on feature rows:** **`label_*`** columns (including merged **`outcome_label_version`**) exist for **backtests and coverage metrics**, not for candidate selection or executable quote math.
+29. **Sealed test:** **`build_labels`**, **`audit_research_dataset`**, **`build_features`**, and **`run_backtest`** all treat the test split as **opt-in** (explicit flags), consistent with v0.6–v0.7.
 
 For engineering context, see `ARCHITECTURE.md`. For table-level details, see `DATA_SCHEMA.md`.

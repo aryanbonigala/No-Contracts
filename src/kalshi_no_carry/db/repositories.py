@@ -18,6 +18,7 @@ from kalshi_no_carry.db.schema import (
     RawMarket,
     RawOrderbookSnapshot,
     ResearchFeatureRow,
+    ResearchMarketLabel,
     StrategySplit,
 )
 from kalshi_no_carry.kalshi_client import derive_executable_prices_from_orderbook
@@ -463,6 +464,85 @@ def count_research_feature_rows(
 def research_feature_row_as_dict(row: ResearchFeatureRow) -> dict[str, Any]:
     """ORM row → plain dict (all columns) for deterministic backtests / export."""
     return {c.key: getattr(row, c.key) for c in ResearchFeatureRow.__table__.columns}
+
+
+def list_raw_markets_for_labeling(
+    session: Session,
+    *,
+    market_tickers: Sequence[str] | None = None,
+    statuses: Sequence[str] | None = None,
+    limit: int | None = None,
+) -> list[RawMarket]:
+    """Deterministic read of ``raw_markets`` for outcome labeling."""
+    stmt = select(RawMarket).order_by(RawMarket.market_ticker)
+    if market_tickers:
+        mt = [str(m).strip() for m in market_tickers if m and str(m).strip()]
+        if mt:
+            stmt = stmt.where(RawMarket.market_ticker.in_(mt))
+    if statuses:
+        st = [str(s).strip() for s in statuses if s and str(s).strip()]
+        if st:
+            stmt = stmt.where(RawMarket.status.in_(st))
+    if limit is not None:
+        stmt = stmt.limit(int(limit))
+    return list(session.scalars(stmt).all())
+
+
+def upsert_market_outcome_label(session: Session, row: ResearchMarketLabel) -> ResearchMarketLabel:
+    return session.merge(row)
+
+
+def bulk_upsert_market_outcome_labels(session: Session, rows: Sequence[ResearchMarketLabel]) -> int:
+    n = 0
+    for r in rows:
+        session.merge(r)
+        n += 1
+    return n
+
+
+def delete_market_outcome_labels_for_version(session: Session, *, label_version: str) -> int:
+    res = session.execute(
+        delete(ResearchMarketLabel).where(ResearchMarketLabel.label_version == (label_version or "").strip())
+    )
+    return int(res.rowcount or 0)
+
+
+def count_market_outcome_labels(session: Session, *, label_version: str | None = None) -> int:
+    stmt = select(func.count()).select_from(ResearchMarketLabel)
+    if label_version is not None:
+        stmt = stmt.where(ResearchMarketLabel.label_version == label_version.strip())
+    return int(session.scalar(stmt) or 0)
+
+
+def list_market_outcome_labels(
+    session: Session,
+    *,
+    label_version: str | None = None,
+    limit: int | None = None,
+) -> list[ResearchMarketLabel]:
+    stmt = select(ResearchMarketLabel).order_by(ResearchMarketLabel.market_ticker)
+    if label_version is not None:
+        stmt = stmt.where(ResearchMarketLabel.label_version == label_version.strip())
+    if limit is not None:
+        stmt = stmt.limit(int(limit))
+    return list(session.scalars(stmt).all())
+
+
+def load_market_outcome_labels_by_ticker(
+    session: Session,
+    *,
+    label_version: str,
+    market_tickers: Sequence[str] | None = None,
+) -> dict[str, ResearchMarketLabel]:
+    lv = (label_version or "").strip()
+    if not lv:
+        return {}
+    stmt = select(ResearchMarketLabel).where(ResearchMarketLabel.label_version == lv)
+    if market_tickers is not None:
+        mt = sorted({str(m).strip() for m in market_tickers if m and str(m).strip()})
+        if mt:
+            stmt = stmt.where(ResearchMarketLabel.market_ticker.in_(mt))
+    return {r.market_ticker: r for r in session.scalars(stmt).all()}
 
 
 def list_feature_rows_for_backtest(

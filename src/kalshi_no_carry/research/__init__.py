@@ -1,1 +1,1 @@
-"""Research utilities: clustering, splits, feature dataset, read-only backtest harness (v0.7)."""
+"""Research utilities: clustering, splits, features, outcome labels, dataset audit, read-only backtest (v0.8)."""
