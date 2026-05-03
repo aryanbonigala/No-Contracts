@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -33,32 +32,27 @@ def test_run_backtest_dry_run_does_not_print_database_url() -> None:
     spec = importlib.util.spec_from_file_location("run_backtest_cli", ROOT / "scripts" / "run_backtest.py")
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
-    with patch("kalshi_no_carry.config.get_settings", return_value=settings):
-        spec.loader.exec_module(mod)
-
     engine = MagicMock()
     engine.dispose = MagicMock()
 
-    @contextmanager
-    def _begin():
-        yield None
+    out_payload = {
+        "success": True,
+        "stage_name": "backtest",
+        "run_id": "rid",
+        "rows_seen": 0,
+        "warnings": [],
+        "summary": {},
+        "dry_run": True,
+        "trades_persisted": 0,
+    }
 
-    session = MagicMock()
-    session.begin = MagicMock(side_effect=_begin)
-
-    @contextmanager
-    def _sess():
-        yield session
-
-    def fake_sessionmaker(*args: object, **kwargs: object):
-        return lambda: _sess()
-
-    with patch("kalshi_no_carry.database.create_engine_from_database_url", return_value=engine):
-        with patch("kalshi_no_carry.logging_setup.configure_logging", MagicMock()):
-            with patch("sqlalchemy.orm.sessionmaker", side_effect=fake_sessionmaker):
+    with patch("kalshi_no_carry.config.get_settings", return_value=settings):
+        spec.loader.exec_module(mod)
+        with patch("kalshi_no_carry.database.create_engine_from_database_url", return_value=engine):
+            with patch("kalshi_no_carry.logging_setup.configure_logging", MagicMock()):
                 with patch(
-                    "kalshi_no_carry.db.repositories.list_feature_rows_for_backtest",
-                    return_value=[],
+                    "kalshi_no_carry.research.backtest_no_carry.run_no_carry_backtest_persisted",
+                    return_value=out_payload,
                 ):
                     buf = StringIO()
                     with patch("sys.stdout", buf):

@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
+
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import sessionmaker
 
 from kalshi_no_carry.db.schema import (
     EventCluster,
@@ -194,3 +199,128 @@ def validate_feature_row(row: ResearchFeatureRow) -> list[str]:
         if str(row.label_market_result).strip().lower() not in allowed:
             issues.append("label_market_result must be yes, no, void, or unknown when outcome_label_version is set")
     return issues
+
+
+def build_research_feature_rows_pipeline(
+    engine: Engine,
+    *,
+    split_version: str,
+    feature_version: str,
+    label_version: str | None = None,
+    include_splits: Sequence[str] | None = None,
+    include_test: bool = False,
+    market_tickers: list[str] | None = None,
+    limit: int | None = None,
+    delete_existing: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """
+    Materialize ``research_feature_rows`` from stored snapshots (shared by CLI and v0.9 pipeline).
+
+    When ``include_splits`` is omitted, defaults to **train** and **validation**; **test** is included
+    only when ``include_test=True`` (mirrors ``list_orderbook_snapshots_for_feature_building``).
+    """
+    from kalshi_no_carry.db.repositories import (
+        bulk_upsert_research_feature_rows,
+        delete_research_feature_rows_for_version,
+        list_orderbook_snapshots_for_feature_building,
+        load_market_outcome_labels_by_ticker,
+    )
+
+    sv = (split_version or "").strip()
+    fv = (feature_version or "").strip()
+    if not sv or not fv:
+        return {"success": False, "error": "split_version and feature_version are required", "warnings": []}
+
+    if include_splits is None:
+        parts: list[str] = ["train", "validation"]
+        if include_test:
+            parts.append("test")
+        split_parts: tuple[str, ...] = tuple(parts)
+    else:
+        split_parts = tuple(str(x).strip() for x in include_splits if str(x).strip())
+        if not split_parts:
+            return {"success": False, "error": "include_splits must list at least one split", "warnings": []}
+
+    warnings: list[str] = []
+    out: dict[str, Any] = {
+        "success": True,
+        "stage_name": "build_features",
+        "split_version": sv,
+        "feature_version": fv,
+        "include_test": bool(include_test),
+        "splits_requested": list(split_parts),
+        "rows_seen": 0,
+        "rows_built": 0,
+        "rows_written": 0,
+        "rows_skipped": 0,
+        "missing_price_rows": 0,
+        "missing_close_time_rows": 0,
+        "label_version": (str(label_version).strip() if label_version else None),
+        "warnings": warnings,
+        "dry_run": bool(dry_run),
+    }
+
+    maker = sessionmaker(engine, expire_on_commit=False, future=True)
+    with maker() as session:
+        with session.begin():
+            if delete_existing and not dry_run:
+                delete_research_feature_rows_for_version(
+                    session,
+                    split_version=sv,
+                    feature_version=fv,
+                )
+
+            sources = list_orderbook_snapshots_for_feature_building(
+                session,
+                split_version=sv,
+                include_splits=split_parts,
+                include_test=bool(include_test),
+                market_tickers=market_tickers,
+                limit=limit,
+            )
+            out["rows_seen"] = len(sources)
+
+            label_ver = (str(label_version).strip() if label_version else None) or None
+            labels_map: dict[str, Any] = {}
+            if label_ver:
+                tickers = sorted({src.market.market_ticker for src in sources})
+                labels_map = load_market_outcome_labels_by_ticker(
+                    session, label_version=label_ver, market_tickers=tickers
+                )
+                missing = [t for t in tickers if t not in labels_map]
+                if missing:
+                    warnings.append(
+                        f"label_version={label_ver!r} missing labels for {len(missing)} / {len(tickers)} markets in this batch"
+                    )
+
+            rows: list[ResearchFeatureRow] = []
+            for src in sources:
+                ol = labels_map.get(src.market.market_ticker) if label_ver else None
+                row = build_feature_row_from_joined_record(
+                    src,
+                    feature_version=fv,
+                    outcome_label=ol,
+                )
+                issues = validate_feature_row(row)
+                if issues:
+                    out["rows_skipped"] += 1
+                    warnings.append(f"skip snapshot {row.snapshot_id}: {issues}")
+                    continue
+                out["rows_built"] += 1
+                if not row.has_complete_executable_prices:
+                    out["missing_price_rows"] += 1
+                if row.seconds_to_close is None:
+                    out["missing_close_time_rows"] += 1
+                if not dry_run:
+                    rows.append(row)
+
+            if not dry_run and rows:
+                bulk_upsert_research_feature_rows(session, rows)
+                out["rows_written"] = len(rows)
+            elif dry_run:
+                out["rows_written"] = 0
+            else:
+                out["rows_written"] = len(rows)
+
+    return out

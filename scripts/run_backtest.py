@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -83,16 +82,9 @@ def main(argv: list[str] | None = None) -> int:
 
     from kalshi_no_carry.config import get_settings
     from kalshi_no_carry.database import create_all_tables, create_engine_from_database_url
-    from kalshi_no_carry.db.repositories import (
-        delete_backtest_run,
-        insert_backtest_run,
-        insert_backtest_trades,
-        list_feature_rows_for_backtest,
-    )
-    from kalshi_no_carry.db.schema import BacktestRun
     from kalshi_no_carry.logging_setup import configure_logging
     from kalshi_no_carry.research.backtest_config import BacktestConfig
-    from kalshi_no_carry.research.backtest_no_carry import compute_backtest_run_id, run_no_carry_backtest_core
+    from kalshi_no_carry.research.backtest_no_carry import compute_backtest_run_id, run_no_carry_backtest_persisted
 
     configure_logging()
     settings = get_settings()
@@ -142,64 +134,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.create_tables:
             create_all_tables(engine)
 
-        from sqlalchemy.orm import sessionmaker
-
-        maker = sessionmaker(engine, expire_on_commit=False, future=True)
-
-        limit = config.max_rows
-        with maker() as session:
-            feature_rows = list_feature_rows_for_backtest(
-                session,
-                split_version=config.split_version,
-                feature_version=config.feature_version,
-                include_splits=config.include_splits,
-                include_test=config.include_test,
-                limit=limit,
-                market_tickers=args.market_tickers,
-            )
-            selection, trade_results, summary = run_no_carry_backtest_core(feature_rows, config)
-
-            rows_written = 0
-            if not args.dry_run:
-                with session.begin():
-                    if args.delete_existing_run:
-                        delete_backtest_run(session, run_id)
-                    cfg_dict = config.model_dump(mode="json")
-                    run_row = BacktestRun(
-                        run_id=run_id,
-                        backtest_version=config.backtest_version,
-                        strategy_name=config.strategy_name,
-                        split_version=config.split_version,
-                        feature_version=config.feature_version,
-                        config_json=cfg_dict,
-                        summary_json=summary,
-                        created_at=datetime.now(timezone.utc),
-                        test_included=bool(config.include_test),
-                    )
-                    insert_backtest_run(session, run_row)
-                    rows_written = insert_backtest_trades(session, run_id, trade_results)
-
-        out = {
-            "success": True,
-            "run_id": run_id,
-            "backtest_version": config.backtest_version,
-            "strategy_name": config.strategy_name,
-            "split_version": config.split_version,
-            "feature_version": config.feature_version,
-            "include_test": bool(config.include_test),
-            "test_included": bool(summary.get("test_included")),
-            "rows_seen": summary.get("rows_seen"),
-            "candidates_selected": summary.get("candidates_selected"),
-            "scored_trades": summary.get("scored_trades"),
-            "unscored_trades": summary.get("unscored_trades"),
-            "net_pnl_cents": summary.get("net_pnl_cents"),
-            "dry_run": bool(args.dry_run),
-            "trades_persisted": 0 if args.dry_run else rows_written,
-            "warnings": summary.get("warnings", []),
-            "summary": summary,
-        }
+        out = run_no_carry_backtest_persisted(
+            engine,
+            config,
+            dry_run=bool(args.dry_run),
+            delete_existing_run=bool(args.delete_existing_run),
+            market_tickers=args.market_tickers,
+        )
+        out.pop("stage_name", None)
         print(_json_safe(out), flush=True)
-        return 0
+        return 0 if out.get("success") else 1
     except Exception as e:
         print(_json_safe({"success": False, "error": str(e), "run_id": run_id}), flush=True)
         return 1

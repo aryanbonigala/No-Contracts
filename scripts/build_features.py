@@ -60,14 +60,8 @@ def main(argv: list[str] | None = None) -> int:
 
     from kalshi_no_carry.config import get_settings
     from kalshi_no_carry.database import create_all_tables, create_engine_from_database_url
-    from kalshi_no_carry.db.repositories import (
-        bulk_upsert_research_feature_rows,
-        delete_research_feature_rows_for_version,
-        list_orderbook_snapshots_for_feature_building,
-        load_market_outcome_labels_by_ticker,
-    )
     from kalshi_no_carry.logging_setup import configure_logging
-    from kalshi_no_carry.research.feature_dataset import build_feature_row_from_joined_record, validate_feature_row
+    from kalshi_no_carry.research.feature_dataset import build_research_feature_rows_pipeline
 
     configure_logging()
     settings = get_settings()
@@ -81,23 +75,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     engine = create_engine_from_database_url(str(settings.database_url))
-    warnings: list[str] = []
-    out: dict = {
-        "success": True,
-        "split_version": args.split_version.strip(),
-        "feature_version": args.feature_version.strip(),
-        "include_test": bool(args.include_test),
-        "splits_requested": split_parts,
-        "rows_seen": 0,
-        "rows_built": 0,
-        "rows_written": 0,
-        "rows_skipped": 0,
-        "missing_price_rows": 0,
-        "missing_close_time_rows": 0,
-        "label_version": (str(args.label_version).strip() if args.label_version else None),
-        "warnings": warnings,
-    }
-
     try:
         if args.migrate:
             from alembic import command
@@ -109,81 +86,27 @@ def main(argv: list[str] | None = None) -> int:
         if args.create_tables:
             create_all_tables(engine)
 
-        from sqlalchemy.orm import sessionmaker
-
-        maker = sessionmaker(engine, expire_on_commit=False, future=True)
-
-        with maker() as session:
-            with session.begin():
-                if args.delete_existing and not args.dry_run:
-                    delete_research_feature_rows_for_version(
-                        session,
-                        split_version=args.split_version.strip(),
-                        feature_version=args.feature_version.strip(),
-                    )
-
-                sources = list_orderbook_snapshots_for_feature_building(
-                    session,
-                    split_version=args.split_version.strip(),
-                    include_splits=tuple(split_parts),
-                    include_test=bool(args.include_test),
-                    market_tickers=args.market_tickers,
-                    limit=args.limit,
-                )
-                out["rows_seen"] = len(sources)
-
-                label_ver = (str(args.label_version).strip() if args.label_version else None) or None
-                labels_map: dict = {}
-                if label_ver:
-                    tickers = sorted({src.market.market_ticker for src in sources})
-                    labels_map = load_market_outcome_labels_by_ticker(
-                        session, label_version=label_ver, market_tickers=tickers
-                    )
-                    missing = [t for t in tickers if t not in labels_map]
-                    if missing:
-                        warnings.append(
-                            f"label_version={label_ver!r} missing labels for {len(missing)} / {len(tickers)} markets in this batch"
-                        )
-
-                rows: list = []
-                for src in sources:
-                    ol = labels_map.get(src.market.market_ticker) if label_ver else None
-                    row = build_feature_row_from_joined_record(
-                        src,
-                        feature_version=args.feature_version.strip(),
-                        outcome_label=ol,
-                    )
-                    issues = validate_feature_row(row)
-                    if issues:
-                        out["rows_skipped"] += 1
-                        warnings.append(f"skip snapshot {row.snapshot_id}: {issues}")
-                        continue
-                    out["rows_built"] += 1
-                    if not row.has_complete_executable_prices:
-                        out["missing_price_rows"] += 1
-                    if row.seconds_to_close is None:
-                        out["missing_close_time_rows"] += 1
-                    if not args.dry_run:
-                        rows.append(row)
-
-                if not args.dry_run and rows:
-                    bulk_upsert_research_feature_rows(session, rows)
-                    out["rows_written"] = len(rows)
-                elif args.dry_run:
-                    out["rows_written"] = 0
-                else:
-                    out["rows_written"] = len(rows)
-
-    except Exception as exc:
-        out["success"] = False
-        out["error"] = f"{type(exc).__name__}: {exc}"
+        out = build_research_feature_rows_pipeline(
+            engine,
+            split_version=args.split_version.strip(),
+            feature_version=args.feature_version.strip(),
+            label_version=(str(args.label_version).strip() if args.label_version else None),
+            include_splits=tuple(split_parts),
+            include_test=bool(args.include_test),
+            market_tickers=args.market_tickers,
+            limit=args.limit,
+            delete_existing=bool(args.delete_existing),
+            dry_run=bool(args.dry_run),
+        )
+        out.pop("stage_name", None)
         print(json.dumps(out), flush=True)
+        return 0 if out.get("success") else 1
+    except Exception as exc:
+        err = {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+        print(json.dumps(err), flush=True)
         return 1
     finally:
         engine.dispose()
-
-    print(json.dumps(out), flush=True)
-    return 0
 
 
 if __name__ == "__main__":

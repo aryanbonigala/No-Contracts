@@ -481,3 +481,83 @@ def run_no_carry_backtest_core(
         trade_results=trade_results,
     )
     return selection, trade_results, summary
+
+
+def run_no_carry_backtest_persisted(
+    engine: Any,
+    config: BacktestConfig,
+    *,
+    dry_run: bool = False,
+    delete_existing_run: bool = False,
+    market_tickers: list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Load feature rows from ``engine``, run ``run_no_carry_backtest_core``, optionally persist
+    ``backtest_runs`` / ``backtest_trades`` (shared by ``scripts/run_backtest.py`` and v0.9 pipeline).
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy.orm import sessionmaker
+
+    from kalshi_no_carry.db.repositories import (
+        delete_backtest_run,
+        insert_backtest_run,
+        insert_backtest_trades,
+        list_feature_rows_for_backtest,
+    )
+    from kalshi_no_carry.db.schema import BacktestRun
+
+    run_id = compute_backtest_run_id(config)
+    maker = sessionmaker(engine, expire_on_commit=False, future=True)
+    rows_written = 0
+    with maker() as session:
+        feature_rows = list_feature_rows_for_backtest(
+            session,
+            split_version=config.split_version,
+            feature_version=config.feature_version,
+            include_splits=config.include_splits,
+            include_test=config.include_test,
+            limit=config.max_rows,
+            market_tickers=market_tickers,
+        )
+        selection, trade_results, summary = run_no_carry_backtest_core(feature_rows, config)
+
+        if not dry_run:
+            with session.begin():
+                if delete_existing_run:
+                    delete_backtest_run(session, run_id)
+                cfg_dict = config.model_dump(mode="json")
+                run_row = BacktestRun(
+                    run_id=run_id,
+                    backtest_version=config.backtest_version,
+                    strategy_name=config.strategy_name,
+                    split_version=config.split_version,
+                    feature_version=config.feature_version,
+                    config_json=cfg_dict,
+                    summary_json=summary,
+                    created_at=datetime.now(timezone.utc),
+                    test_included=bool(config.include_test),
+                )
+                insert_backtest_run(session, run_row)
+                rows_written = insert_backtest_trades(session, run_id, trade_results)
+
+    return {
+        "success": True,
+        "stage_name": "backtest",
+        "run_id": run_id,
+        "backtest_version": config.backtest_version,
+        "strategy_name": config.strategy_name,
+        "split_version": config.split_version,
+        "feature_version": config.feature_version,
+        "include_test": bool(config.include_test),
+        "test_included": bool(summary.get("test_included")),
+        "rows_seen": summary.get("rows_seen"),
+        "candidates_selected": summary.get("candidates_selected"),
+        "scored_trades": summary.get("scored_trades"),
+        "unscored_trades": summary.get("unscored_trades"),
+        "net_pnl_cents": summary.get("net_pnl_cents"),
+        "dry_run": bool(dry_run),
+        "trades_persisted": 0 if dry_run else rows_written,
+        "warnings": list(summary.get("warnings", [])),
+        "summary": summary,
+    }

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -33,33 +32,33 @@ def test_build_features_dry_run_does_not_print_database_url() -> None:
     spec = importlib.util.spec_from_file_location("build_features_cli", ROOT / "scripts" / "build_features.py")
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
-    with patch("kalshi_no_carry.config.get_settings", return_value=settings):
-        spec.loader.exec_module(mod)
-
     engine = MagicMock()
     engine.dispose = MagicMock()
+    pipe_out = {
+        "success": True,
+        "stage_name": "build_features",
+        "rows_seen": 0,
+        "rows_written": 0,
+        "rows_built": 0,
+        "rows_skipped": 0,
+        "warnings": [],
+        "split_version": "sv",
+        "feature_version": "fv",
+        "include_test": False,
+        "splits_requested": ["train", "validation"],
+        "missing_price_rows": 0,
+        "missing_close_time_rows": 0,
+        "label_version": None,
+        "dry_run": True,
+    }
 
-    session = MagicMock()
-
-    @contextmanager
-    def _begin():
-        yield None
-
-    session.begin = MagicMock(side_effect=_begin)
-
-    @contextmanager
-    def _sess():
-        yield session
-
-    def fake_sessionmaker(*args: object, **kwargs: object):
-        return lambda: _sess()
-
-    with patch("kalshi_no_carry.database.create_engine_from_database_url", return_value=engine):
-        with patch("kalshi_no_carry.logging_setup.configure_logging", MagicMock()):
-            with patch("sqlalchemy.orm.sessionmaker", side_effect=fake_sessionmaker):
+    with patch("kalshi_no_carry.config.get_settings", return_value=settings):
+        spec.loader.exec_module(mod)
+        with patch("kalshi_no_carry.database.create_engine_from_database_url", return_value=engine):
+            with patch("kalshi_no_carry.logging_setup.configure_logging", MagicMock()):
                 with patch(
-                    "kalshi_no_carry.db.repositories.list_orderbook_snapshots_for_feature_building",
-                    return_value=[],
+                    "kalshi_no_carry.research.feature_dataset.build_research_feature_rows_pipeline",
+                    return_value=pipe_out,
                 ):
                     buf = StringIO()
                     with patch("sys.stdout", buf):
