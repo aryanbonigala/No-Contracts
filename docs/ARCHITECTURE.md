@@ -1,10 +1,10 @@
-# Architecture (v0.11 — collectors + pipeline + reporting + splits + features + labels + audit + backtest + Alembic)
+# Architecture (v0.12 — collectors + pipeline + reporting + orderbook audit + splits + features + labels + audit + backtest + Alembic)
 
 ## Purpose
 
 This codebase supports **offline research** for a Kalshi thesis around **NO** contracts: identify potential mispricing after costs (fees, spread), ambiguity, and correlation — **without live trading**.
 
-**v0.5** adds **deterministic clustering and splits** on top of **v0.4** collectors. **v0.6** adds **`research_feature_rows`**. **v0.7** adds the **read-only backtest harness** (`backtest_runs` / `backtest_trades`). **v0.8** adds **`research_market_labels`** from **`raw_markets`** (`research/outcomes.py`), optional merge into feature rows via **`--label-version`**, and **`research/dataset_audit.py`** for coverage metrics. **v0.9** adds **`research/pipeline_runner.py`**: ordered orchestration (optional migrate/collectors, splits, labels, features with `label_version`, audit, optional backtest) with one safe JSON summary. **v0.10** adds **`research/reporting.py`**: Markdown + readiness **`compute_research_readiness`** from pipeline outputs (`scripts/run_research_report.py`). **v0.11** ensures **`collectors.common.normalize_collector_summary`** flattens each collector return value (dataclass, dict, or Pydantic) into a **JSON-serializable** stage payload with a consistent **`success`** bit before it is merged into **`run_research_pipeline`** output (fixes composite orderbook summaries that only exposed nested **`success`** fields). Labels support **scoring and audits**, not pricing-feature inputs.
+**v0.5** adds **deterministic clustering and splits** on top of **v0.4** collectors. **v0.6** adds **`research_feature_rows`**. **v0.7** adds the **read-only backtest harness** (`backtest_runs` / `backtest_trades`). **v0.8** adds **`research_market_labels`** from **`raw_markets`** (`research/outcomes.py`), optional merge into feature rows via **`--label-version`**, and **`research/dataset_audit.py`** for coverage metrics. **v0.9** adds **`research/pipeline_runner.py`**: ordered orchestration (optional migrate/collectors, splits, labels, features with `label_version`, audit, optional backtest) with one safe JSON summary. **v0.10** adds **`research/reporting.py`**: Markdown + readiness **`compute_research_readiness`** from pipeline outputs (`scripts/run_research_report.py`). **v0.11** ensures **`collectors.common.normalize_collector_summary`** flattens each collector return value (dataclass, dict, or Pydantic) into a **JSON-serializable** stage payload with a consistent **`success`** bit before it is merged into **`run_research_pipeline`** output (fixes composite orderbook summaries that only exposed nested **`success`** fields). **v0.12** adds **`research/orderbook_audit.py`**: read-only inspection of **`raw_orderbook_snapshots`** (shape + implied executable NO/YES asks) to separate **empty books**, **unrecognized JSON**, and **feature-row extraction gaps**; **`run_no_carry_backtest_persisted`** completes reads and writes in **separate SQLAlchemy transactional scopes** to avoid nested **`begin()`** errors, and **replaces** any existing persisted row for the same **deterministic `run_id`** (UUIDv5 over canonical config) in **one transaction** when persisting so reruns stay idempotent. Labels support **scoring and audits**, not pricing-feature inputs.
 
 ## Process boundaries
 
@@ -59,7 +59,7 @@ flowchart LR
 
 **v0.5 research split flow:** `raw_events` + `raw_markets` → **event clustering** → `event_clusters` → **split assignment** → `strategy_splits`.
 
-**v0.6 feature flow:** `raw_orderbook_snapshots` → join markets + clusters + `strategy_splits` → **`research.feature_dataset`** → **`research_feature_rows`** (versioned by `feature_version` + `split_version`).
+**v0.6 feature flow:** `raw_orderbook_snapshots` (with **`derive_executable_prices_from_orderbook`** at ingest) → join markets + clusters + `strategy_splits` → **`research.feature_dataset`** → **`research_feature_rows`**. **v0.12** optional **`audit_orderbook_price_extraction`** validates stored **`raw_json`** vs. columns and vs. feature rows before trusting readiness/backtests.
 
 **v0.8 label flow:** **`raw_markets`** → **`research.outcomes`** → **`research_market_labels`** → *(optional)* merge at **`build_features.py`** into **`label_*`** on **`research_feature_rows`** → backtest **scoring** + **`dataset_audit`**.
 
@@ -137,14 +137,14 @@ flowchart LR
 | `kalshi_no_carry.research.dataset_audit` | `audit_research_dataset` coverage / join diagnostics |
 | `kalshi_no_carry.research.backtest_config` | Versioned `BacktestConfig` (Pydantic) for read-only runs |
 | `kalshi_no_carry.research.pipeline_runner` | v0.9 **`ResearchPipelineConfig`**, **`run_research_pipeline`**, **`recommend_next_action`** |
-| `kalshi_no_carry.research.reporting` | v0.10 **`build_research_audit_report`**, **`compute_research_readiness`**, table helpers |
+| `kalshi_no_carry.research.orderbook_audit` | v0.12 **`audit_orderbook_price_extraction`**: read-only orderbook JSON + executable price diagnostics |
 | `kalshi_no_carry.research.backtest_no_carry` | Candidate selection, `score_no_trade`, summaries; **`run_no_carry_backtest_persisted`** |
 | `scripts/build_splits.py` | CLI: materialize clusters + splits (requires `DATABASE_URL`) |
 | `scripts/run_research_pipeline.py` | CLI: full pipeline, JSON summary (test excluded by default) |
 | `scripts/run_research_report.py` | CLI: pipeline + Markdown/JSON audit report + readiness; **`--dry-run`** = audit-only preview, no files / no DB writes |
 | `scripts/build_labels.py` | CLI: populate `research_market_labels` |
 | `scripts/build_features.py` | CLI: build / persist `research_feature_rows` (test excluded by default) |
-| `scripts/audit_research_dataset.py` | CLI: JSON dataset audit (test excluded by default) |
+| `scripts/audit_orderbook_prices.py` | CLI: read-only orderbook price audit JSON |
 | `scripts/run_backtest.py` | CLI: load feature rows, run baseline NO-carry rules, optional persist |
 
 ## Ingestion design

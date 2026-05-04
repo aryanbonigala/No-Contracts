@@ -180,6 +180,20 @@ def test_derive_executable_both_sides() -> None:
     assert d["yes_ask_size"] == "7"
 
 
+def test_derive_executable_uses_last_level_as_best_bid() -> None:
+    book: dict[str, Any] = {
+        "orderbook_fp": {
+            "yes_dollars": [["0.1000", "1"], ["0.4200", "13"]],
+            "no_dollars": [["0.0100", "100"], ["0.5600", "17"]],
+        }
+    }
+    d = derive_executable_prices_from_orderbook(book)
+    assert d["best_yes_bid_cents"] == 42
+    assert d["best_no_ask_cents"] == 58
+    assert d["best_no_bid_cents"] == 56
+    assert d["best_yes_ask_cents"] == 44
+
+
 def test_derive_executable_only_yes_bids() -> None:
     book = {"orderbook_fp": {"yes_dollars": [["0.2000", "3"]], "no_dollars": []}}
     d = derive_executable_prices_from_orderbook(book)

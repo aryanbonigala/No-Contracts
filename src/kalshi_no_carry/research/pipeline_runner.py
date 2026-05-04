@@ -524,7 +524,6 @@ def run_research_pipeline(
                 engine,
                 btc,
                 dry_run=config.dry_run,
-                delete_existing_run=False,
                 market_tickers=list(config.market_tickers) if config.market_tickers else None,
             )
             backtest_summary = bt
@@ -537,6 +536,10 @@ def run_research_pipeline(
                 "rows_seen": bt.get("rows_seen"),
                 "scored_trades": bt.get("scored_trades"),
                 "dry_run": bt.get("dry_run"),
+                "persisted": bt.get("persisted"),
+                "overwritten_existing_run": bt.get("overwritten_existing_run"),
+                "prior_run_deleted": bt.get("prior_run_deleted"),
+                "prior_trades_deleted": bt.get("prior_trades_deleted"),
             }
             if not stages["backtest"]["success"]:
                 failed_stage = "backtest"

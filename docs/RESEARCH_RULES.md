@@ -74,4 +74,14 @@ These rules exist to keep the Kalshi **NO carry** study statistically honest and
 
 39. **No live Kalshi in default tests:** collector and pipeline **integration tests** must **mock** HTTP / client calls or use **fakes**. The default **`pytest`** suite **must not** require network access or Kalshi availability. Optional manual “public data smoke” runs are documented in **`README.md`** only.
 
+## Executable quotes and modeling prerequisites (v0.12)
+
+40. **Never fabricate executable prices:** if orderbook bids are missing or the book is empty, **`no_ask_cents`** / related fields stay **`null`**; do not infer from titles, last trade, or unrelated markets.
+41. **Kalshi-implied asks from bids only:** executable **NO ask** cents = **100 − best YES bid** cents; executable **YES ask** cents = **100 − best NO bid** cents, using the **best** (highest) bid level per side per API ordering.
+
+## Persisted backtest idempotency (v0.12)
+
+42. **No manual DB cleanup for reruns:** when **`run_no_carry_backtest_persisted`** writes **`backtest_runs`** / **`backtest_trades`**, repeating the **same** configuration must **not** require deleting rows by hand. The harness replaces the prior deterministic **`run_id`** in one transaction instead of failing on a unique constraint.
+43. **Fix extraction before modeling:** if **`audit_orderbook_prices.py`** shows raw books support implied asks but **`research_feature_rows`** lack **`no_ask_cents`**, treat that as a **data pipeline bug** to fix (re-ingest / rebuild features) — not as a signal to patch models around bad rows.
+
 For engineering context, see `ARCHITECTURE.md`. For table-level details, see `DATA_SCHEMA.md`.

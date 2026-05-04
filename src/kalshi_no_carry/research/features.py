@@ -143,10 +143,17 @@ def utc_hour_and_weekday(fetched_at: datetime) -> tuple[int, int]:
 
 def summarize_orderbook_depth(raw_json: dict[str, Any] | None) -> dict[str, Any] | None:
     """Small JSON-safe summary for auditing (not a full book duplicate)."""
-    if not raw_json:
+    if not raw_json or not isinstance(raw_json, dict):
         return None
-    yes = raw_json.get("yes")
-    no = raw_json.get("no")
+    ob = raw_json.get("orderbook_fp", raw_json)
+    if not isinstance(ob, dict):
+        return None
+    yes = ob.get("yes_dollars")
+    if yes is None:
+        yes = ob.get("yes")
+    no = ob.get("no_dollars")
+    if no is None:
+        no = ob.get("no")
     yc = len(yes) if isinstance(yes, list) else None
     nc = len(no) if isinstance(no, list) else None
     return {"yes_level_count": yc, "no_level_count": nc}

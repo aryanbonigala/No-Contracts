@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from kalshi_no_carry.database import create_all_tables
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -343,3 +349,115 @@ def test_non_dry_run_prints_files_and_db_writes_true(tmp_path: Path) -> None:
     assert out["dry_run"] is False
     assert out["files_written"] is True
     assert out["database_writes_performed"] is True
+
+
+def test_run_research_report_run_backtest_twice_sqlite_no_integrity_error(tmp_path: Path) -> None:
+    _seed_minimal_feature_row(tmp_path)
+
+    spec = importlib.util.spec_from_file_location("run_rr", ROOT / "scripts" / "run_research_report.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    url = f"sqlite+pysqlite:///{tmp_path / 'rr_bt.sqlite'}"
+    common_args = [
+        "--output-dir",
+        str(tmp_path / "reports"),
+        "--report-name",
+        "rr_twice",
+        "--skip-splits",
+        "--skip-labels",
+        "--skip-features",
+        "--skip-audit",
+        "--run-backtest",
+        "--split-version",
+        "sv_rr_twice",
+        "--feature-version",
+        "fv_rr_twice",
+    ]
+    with patch("kalshi_no_carry.config.get_settings", return_value=MagicMock(database_url=url)):
+        spec.loader.exec_module(mod)
+        with patch("kalshi_no_carry.logging_setup.configure_logging", MagicMock()):
+            buf1 = StringIO()
+            with patch("sys.stdout", buf1):
+                rc1 = mod.main(common_args)
+            assert rc1 == 0
+            out1 = json.loads(buf1.getvalue())
+            assert out1["success"] is True
+            summary1 = json.loads((tmp_path / "reports" / "rr_twice" / "summary.json").read_text(encoding="utf-8"))
+            assert summary1["pipeline_summary"]["backtest_summary"]["overwritten_existing_run"] is False
+
+            buf2 = StringIO()
+            with patch("sys.stdout", buf2):
+                rc2 = mod.main(common_args)
+            assert rc2 == 0
+            out2 = json.loads(buf2.getvalue())
+            assert out2["success"] is True
+
+    summary2 = json.loads((tmp_path / "reports" / "rr_twice" / "summary.json").read_text(encoding="utf-8"))
+    bt2 = summary2["pipeline_summary"]["backtest_summary"]
+    assert bt2["overwritten_existing_run"] is True
+
+
+def _seed_minimal_feature_row(tmp_path: Path) -> None:
+    from kalshi_no_carry.db.repositories import (
+        insert_orderbook_snapshot,
+        list_orderbook_snapshots_for_feature_building,
+        upsert_event,
+        upsert_event_cluster,
+        upsert_market,
+        upsert_research_feature_row,
+        upsert_strategy_split,
+    )
+    from kalshi_no_carry.research.feature_dataset import build_feature_row_from_joined_record, validate_feature_row
+
+    db_path = tmp_path / "rr_bt.sqlite"
+    engine = create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+    create_all_tables(engine)
+    maker = sessionmaker(engine, expire_on_commit=False, future=True)
+    sv, fv = "sv_rr_twice", "fv_rr_twice"
+    day = datetime(2024, 6, 15, 15, 0, 0, tzinfo=timezone.utc)
+    close = datetime(2024, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+    with maker() as s:
+        upsert_event(s, {"event_ticker": "EVT-RR", "title": "rr"}, fetched_at=day)
+        upsert_market(
+            s,
+            {
+                "ticker": "MKT-RR",
+                "event_ticker": "EVT-RR",
+                "close_time": close.isoformat(),
+                "status": "open",
+            },
+            fetched_at=day,
+        )
+        upsert_event_cluster(
+            s,
+            cluster_id="cl-rr",
+            cluster_key="event_ticker:EVT-RR",
+            event_ticker="EVT-RR",
+            close_time=close,
+        )
+        upsert_strategy_split(s, cluster_id="cl-rr", split_name="train", split_version=sv)
+        insert_orderbook_snapshot(
+            s,
+            "MKT-RR",
+            {"yes": [], "no": []},
+            executable_prices={
+                "best_yes_bid_cents": 40,
+                "best_yes_ask_cents": 60,
+                "best_no_bid_cents": 40,
+                "best_no_ask_cents": 60,
+                "best_yes_bid_size": 1,
+                "best_yes_ask_size": 1,
+                "best_no_bid_size": 1,
+                "best_no_ask_size": 1,
+            },
+        )
+        s.commit()
+    with maker() as s:
+        src = list_orderbook_snapshots_for_feature_building(
+            s, split_version=sv, include_splits=("train",), include_test=False
+        )[0]
+        row = build_feature_row_from_joined_record(src, feature_version=fv)
+        assert validate_feature_row(row) == []
+        upsert_research_feature_row(s, row)
+        s.commit()
+    engine.dispose()

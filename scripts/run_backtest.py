@@ -58,7 +58,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--delete-existing-run",
         action="store_true",
-        help="Delete any prior run with the same deterministic run_id before insert",
+        help="Deprecated: ignored; same deterministic run_id is replaced automatically when persisting.",
+    )
+    p.add_argument(
+        "--no-overwrite-existing-run",
+        action="store_true",
+        help="Do not delete an existing backtest_runs row first; a rerun with the same config raises IntegrityError.",
     )
     p.add_argument(
         "--create-tables",
@@ -138,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
             engine,
             config,
             dry_run=bool(args.dry_run),
-            delete_existing_run=bool(args.delete_existing_run),
+            overwrite_existing_run=not bool(args.no_overwrite_existing_run),
             market_tickers=args.market_tickers,
         )
         out.pop("stage_name", None)

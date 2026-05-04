@@ -488,12 +488,16 @@ def run_no_carry_backtest_persisted(
     config: BacktestConfig,
     *,
     dry_run: bool = False,
-    delete_existing_run: bool = False,
+    overwrite_existing_run: bool = True,
     market_tickers: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Load feature rows from ``engine``, run ``run_no_carry_backtest_core``, optionally persist
     ``backtest_runs`` / ``backtest_trades`` (shared by ``scripts/run_backtest.py`` and v0.9 pipeline).
+
+    Persisted runs use a **deterministic** ``run_id`` (see ``compute_backtest_run_id``). By default,
+    if that row already exists, it is **replaced** in one transaction (prior trades removed first)
+    so reruns with the same config do not raise duplicate-key errors.
     """
     from datetime import datetime, timezone
 
@@ -510,6 +514,8 @@ def run_no_carry_backtest_persisted(
     run_id = compute_backtest_run_id(config)
     maker = sessionmaker(engine, expire_on_commit=False, future=True)
     rows_written = 0
+    prior_run_deleted = False
+    prior_trades_deleted = 0
     with maker() as session:
         feature_rows = list_feature_rows_for_backtest(
             session,
@@ -520,26 +526,42 @@ def run_no_carry_backtest_persisted(
             limit=config.max_rows,
             market_tickers=market_tickers,
         )
-        selection, trade_results, summary = run_no_carry_backtest_core(feature_rows, config)
 
-        if not dry_run:
-            with session.begin():
-                if delete_existing_run:
-                    delete_backtest_run(session, run_id)
-                cfg_dict = config.model_dump(mode="json")
-                run_row = BacktestRun(
-                    run_id=run_id,
-                    backtest_version=config.backtest_version,
-                    strategy_name=config.strategy_name,
-                    split_version=config.split_version,
-                    feature_version=config.feature_version,
-                    config_json=cfg_dict,
-                    summary_json=summary,
-                    created_at=datetime.now(timezone.utc),
-                    test_included=bool(config.include_test),
-                )
-                insert_backtest_run(session, run_row)
-                rows_written = insert_backtest_trades(session, run_id, trade_results)
+    selection, trade_results, summary = run_no_carry_backtest_core(feature_rows, config)
+
+    if not dry_run:
+        # Separate transactional scope: the read path leaves an implicit transaction open on
+        # the Session, and nesting ``session.begin()`` triggers InvalidRequestError on SQLAlchemy 2.
+        with maker.begin() as session:
+            if overwrite_existing_run:
+                prior_run_deleted, prior_trades_deleted = delete_backtest_run(session, run_id)
+            cfg_dict = config.model_dump(mode="json")
+            run_row = BacktestRun(
+                run_id=run_id,
+                backtest_version=config.backtest_version,
+                strategy_name=config.strategy_name,
+                split_version=config.split_version,
+                feature_version=config.feature_version,
+                config_json=cfg_dict,
+                summary_json=summary,
+                created_at=datetime.now(timezone.utc),
+                test_included=bool(config.include_test),
+            )
+            insert_backtest_run(session, run_row)
+            rows_written = insert_backtest_trades(session, run_id, trade_results)
+
+    overwritten_existing_run = bool(
+        (not dry_run)
+        and overwrite_existing_run
+        and (prior_run_deleted or prior_trades_deleted > 0)
+    )
+    extra_warnings: list[str] = []
+    if overwritten_existing_run:
+        extra_warnings.append(
+            "BACKTEST_RUN_OVERWRITE: replaced existing persisted rows for deterministic "
+            f"run_id={run_id} (prior_run_deleted={prior_run_deleted}, "
+            f"prior_trades_deleted={prior_trades_deleted})."
+        )
 
     return {
         "success": True,
@@ -557,7 +579,11 @@ def run_no_carry_backtest_persisted(
         "unscored_trades": summary.get("unscored_trades"),
         "net_pnl_cents": summary.get("net_pnl_cents"),
         "dry_run": bool(dry_run),
+        "persisted": not bool(dry_run),
+        "overwritten_existing_run": overwritten_existing_run,
+        "prior_run_deleted": bool(prior_run_deleted),
+        "prior_trades_deleted": int(prior_trades_deleted),
         "trades_persisted": 0 if dry_run else rows_written,
-        "warnings": list(summary.get("warnings", [])),
+        "warnings": list(summary.get("warnings", [])) + extra_warnings,
         "summary": summary,
     }

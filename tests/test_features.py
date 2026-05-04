@@ -76,3 +76,8 @@ def test_missing_price_reason() -> None:
 def test_summarize_orderbook_depth() -> None:
     d = summarize_orderbook_depth({"yes": [{"price": 50}], "no": []})
     assert d == {"yes_level_count": 1, "no_level_count": 0}
+
+    d2 = summarize_orderbook_depth(
+        {"orderbook_fp": {"yes_dollars": [["0.1", "1"]], "no_dollars": [["0.2", "2"]]}}
+    )
+    assert d2 == {"yes_level_count": 1, "no_level_count": 1}

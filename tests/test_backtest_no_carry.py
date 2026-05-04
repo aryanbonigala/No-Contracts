@@ -393,7 +393,9 @@ def test_backtest_run_persistence_and_delete(session_factory) -> None:
     with session_factory() as s:
         ntr = s.scalar(select(func.count()).select_from(BacktestTrade))
         assert int(ntr or 0) == 1
-        assert delete_backtest_run(s, run_id) is True
+        deleted, n_del_trades = delete_backtest_run(s, run_id)
+        assert deleted is True
+        assert n_del_trades == 1
         s.commit()
         ntr2 = s.scalar(select(func.count()).select_from(BacktestTrade))
         assert int(ntr2 or 0) == 0
@@ -422,3 +424,57 @@ def test_two_distinct_runs_coexist(session_factory) -> None:
     with session_factory() as s:
         n = s.scalar(select(func.count()).select_from(BacktestRun))
         assert int(n or 0) == 2
+
+
+def test_run_no_carry_backtest_persisted_no_session_begin_conflict(session_factory, memory_engine) -> None:
+    """Regression: nested session.begin() after reads caused InvalidRequestError."""
+    from kalshi_no_carry.research.backtest_no_carry import run_no_carry_backtest_persisted
+
+    cfg = _cfg()
+    out = run_no_carry_backtest_persisted(memory_engine, cfg, dry_run=False)
+    assert out["success"] is True
+    assert out["scored_trades"] == 0
+    assert out["run_id"]
+    assert out["persisted"] is True
+    assert out["overwritten_existing_run"] is False
+    assert out["prior_run_deleted"] is False
+    assert out["prior_trades_deleted"] == 0
+
+    with session_factory() as s:
+        n = s.scalar(select(func.count()).select_from(BacktestRun))
+        assert int(n or 0) == 1
+
+
+def test_run_no_carry_backtest_persisted_twice_overwrites_same_run_id(session_factory, memory_engine) -> None:
+    from kalshi_no_carry.research.backtest_no_carry import compute_backtest_run_id, run_no_carry_backtest_persisted
+
+    cfg = _cfg()
+    rid = compute_backtest_run_id(cfg)
+
+    out1 = run_no_carry_backtest_persisted(memory_engine, cfg, dry_run=False)
+    assert out1["overwritten_existing_run"] is False
+    assert out1["prior_trades_deleted"] == 0
+
+    out2 = run_no_carry_backtest_persisted(memory_engine, cfg, dry_run=False)
+    assert out2["success"] is True
+    assert out2["run_id"] == rid
+    assert out2["overwritten_existing_run"] is True
+    assert out2["prior_run_deleted"] is True
+    assert out2["prior_trades_deleted"] == out1["trades_persisted"]
+
+    with session_factory() as s:
+        n_run = s.scalar(select(func.count()).select_from(BacktestRun))
+        n_tr = s.scalar(select(func.count()).select_from(BacktestTrade))
+        assert int(n_run or 0) == 1
+        assert int(n_tr or 0) == int(out2["trades_persisted"])
+
+
+def test_run_no_carry_backtest_persisted_no_overwrite_raises_on_second_run(memory_engine) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    from kalshi_no_carry.research.backtest_no_carry import run_no_carry_backtest_persisted
+
+    cfg = _cfg()
+    run_no_carry_backtest_persisted(memory_engine, cfg, dry_run=False)
+    with pytest.raises(IntegrityError):
+        run_no_carry_backtest_persisted(memory_engine, cfg, dry_run=False, overwrite_existing_run=False)

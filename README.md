@@ -1,10 +1,10 @@
-# Kalshi NO Carry (v0.11 — collector/pipeline summary integration; read-only)
+# Kalshi NO Carry (v0.12 — orderbook price extraction audit + backtest session fix; read-only)
 
 Production-oriented **research** codebase for testing a statistical thesis on Kalshi binary markets:
 
 **Thesis (informal):** there may be edge in buying high-confidence **NO** contracts when the market-implied NO price is below the "true" NO probability after adjusting for fees, spread, ambiguity risk, and correlated event risk.
 
-This repository is **v0.11.0** (`Kalshi_NO_Carry_v0.11_CollectorPipelineIntegrationFix`). **v0.11** normalizes **collector summaries** before pipeline JSON output so **orderbook** collection (`ActiveMarketsOrderbookSummary` and friends) always exposes a consistent **`success`** / counts interface — fixing **`run_research_pipeline.py`** crashes when **only nested** summaries had **`success`**. **v0.10** reporting + dry-run safety, **v0.9** pipeline orchestration, **v0.8** labeling, and **v0.7** backtests remain below.
+This repository is **v0.12.0** (`Kalshi_NO_Carry_v0.12_OrderbookPriceExtractionAndBacktestSessionFix`). **v0.12** fixes **persisted backtest** SQLAlchemy session handling (no nested `begin()` after reads), adds **`research/orderbook_audit.py`** + **`scripts/audit_orderbook_prices.py`** for read-only diagnosis of stored orderbooks, and corrects **best-bid** selection in **`derive_executable_prices_from_orderbook`** (Kalshi lists bids **ascending**; the **best** bid is the **last** level — previously the code used the first/worst level). **v0.11** collector summary normalization, **v0.10** reporting, **v0.9** pipeline, **v0.8** labels, **v0.7** backtests remain below.
 
 ## Safety / scope
 
@@ -17,8 +17,8 @@ This repository is **v0.11.0** (`Kalshi_NO_Carry_v0.11_CollectorPipelineIntegrat
 
 - `src/kalshi_no_carry/collectors/` — `events.py`, `markets.py`, `orderbooks.py`, `common.py`
 - `src/kalshi_no_carry/db/` — schema + repositories
-- `src/kalshi_no_carry/research/` — clustering, splits, **`features.py`**, **`feature_dataset.py`**, **`outcomes.py`**, **`dataset_audit.py`**, **`pipeline_runner.py`**, **`reporting.py`**, **`backtest_config.py`**, **`backtest_no_carry.py`**, `build_splits.py`
-- `scripts/` — collectors, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, **`run_backtest.py`**, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
+- `src/kalshi_no_carry/research/` — clustering, splits, **`features.py`**, **`feature_dataset.py`**, **`orderbook_audit.py`**, **`outcomes.py`**, **`dataset_audit.py`**, **`pipeline_runner.py`**, **`reporting.py`**, **`backtest_config.py`**, **`backtest_no_carry.py`**, `build_splits.py`
+- `scripts/` — collectors, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`audit_orderbook_prices.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, **`run_backtest.py`**, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
 - `alembic/` — versioned DDL (see **Database setup** below)
 - `tests/` — fakes + SQLite in-memory (**no live Kalshi or Postgres required** for default pytest)
 
@@ -146,6 +146,25 @@ python scripts/audit_research_dataset.py --include-test --label-version v0.8_mar
 
 **Default:** feature-row portion of the audit **excludes test** (same as **`build_features`** / **`run_backtest`**). Use **`--include-test`** only when intentionally auditing the sealed split.
 
+## Orderbook price extraction audit (v0.12; requires `DATABASE_URL`, no Kalshi)
+
+**Read-only:** scans **`raw_orderbook_snapshots`**, classifies JSON shape, recomputes executable prices with the same **`derive_executable_prices_from_orderbook`** helper used at ingest, and optionally joins **`research_feature_rows`** to flag extraction gaps.
+
+```bash
+python scripts/audit_orderbook_prices.py
+python scripts/audit_orderbook_prices.py --limit 50 --show-samples
+python scripts/audit_orderbook_prices.py --split-version v0.5_chronological_60_20_20 --feature-version v0.6_orderbook_snapshot_features
+python scripts/audit_orderbook_prices.py --output-json reports/orderbook-price-audit.json
+```
+
+**How to read results:**
+
+- **`snapshots_empty_both_sides`** high → books had no YES/NO bid levels (illiquid or empty snapshot); missing **`no_ask`** on feature rows is expected — **do not fabricate** prices.
+- **`snapshots_unrecognized_shape`** high → payload is not `orderbook_fp` / `yes_dollars` / `no_dollars` as documented; inspect **`shape_samples`** (fingerprints only, not full JSON).
+- **`feature_raw_executable_no_ask_feature_missing_no_ask`** > 0 → raw book supports an implied **NO ask** but the linked feature row lacks **`no_ask_cents`** (rebuild features after fixing extraction, or investigate join/version mismatch).
+
+**Backtest note:** With **zero scorable** rows (missing labels or missing executable quotes), **`run_research_report.py --run-backtest`** / **`run_research_pipeline.py --run-backtest`** should still **complete**: **`scored_trades`** may be **0** with warnings — not a session crash.
+
 ## End-to-end research pipeline (v0.9; requires `DATABASE_URL`)
 
 **`scripts/run_research_pipeline.py`** runs stages in order: optional **Alembic migrate** and **`create_all`**, **opt-in** `--collect-markets` / `--collect-orderbooks` (network + credentials), **build splits**, **build labels**, **build features** (with **`--label-version`**), **audit**, optional **`--run-backtest`**. It prints a **single JSON object** with per-stage summaries, **`high_level_counts`** (when audit ran), **`next_recommended_action`**, and **no secrets**.
@@ -193,7 +212,13 @@ python scripts/run_backtest.py --max-no-ask-cents 90 --min-seconds-to-close 3600
 python scripts/run_backtest.py --include-test --backtest-version v0.7_no_carry_baseline_FINAL_TEST_ONCE
 ```
 
-Use **`--dry-run`** to compute summaries without writing **`backtest_runs`** / **`backtest_trades`**. **`--delete-existing-run`** removes a prior run with the same deterministic **`run_id`** (derived from the full config). Strategies include `no_carry_price_threshold_v0` (default) and `no_carry_required_prob_placeholder_v0` (probability buckets only, no entries). This is **not** live trading.
+Use **`--dry-run`** to compute summaries without writing **`backtest_runs`** / **`backtest_trades`**.
+
+**Deterministic `run_id`:** persisted runs use a stable UUID derived from the full **`BacktestConfig`** (see **`compute_backtest_run_id`**). Re-running **`run_backtest.py`** or the pipeline/report with the **same** parameters **replaces** the prior row for that id in one transaction (existing **`backtest_trades`** for that run are removed first) instead of inserting duplicates. Summary JSON includes **`overwritten_existing_run`**, **`prior_run_deleted`**, and **`prior_trades_deleted`** when a prior persisted row existed. Opt out with **`--no-overwrite-existing-run`** (you will get a duplicate-key error if the row already exists).
+
+**Deprecated:** **`--delete-existing-run`** is ignored (overwrite-on-persist is the default).
+
+Strategies include `no_carry_price_threshold_v0` (default) and `no_carry_required_prob_placeholder_v0` (probability buckets only, no entries). This is **not** live trading.
 
 ## Tests
 
@@ -211,6 +236,6 @@ Optional Postgres smoke: set `RUN_DB_INTEGRATION_TESTS=1` and `DATABASE_URL`.
 - [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) — tables including `research_feature_rows`, `research_market_labels`, `backtest_runs`, `backtest_trades`
 - [`docs/RESEARCH_RULES.md`](docs/RESEARCH_RULES.md) — leakage + sealed test + feature + label + backtest rules
 
-## Deferred (not in v0.11)
+## Deferred (not in v0.12)
 
-**Probability models**, **strategy optimization**, **order placement**, **portfolio**, **live execution** — v0.11 completes **collector ↔ pipeline summary** normalization; modeling and trading remain out of scope.
+**Probability models**, **strategy optimization**, **order placement**, **portfolio**, **live execution** — v0.12 focuses on **orderbook diagnostics**, **correct executable derivation**, and **safe backtest persistence**; modeling and trading remain out of scope.

@@ -344,14 +344,17 @@ def derive_executable_prices_from_orderbook(orderbook_json: dict[str, Any]) -> d
     - Best NO ask cents = 100 - best YES bid cents (same size as the YES bid level).
     - Best YES ask cents = 100 - best NO bid cents (same size as the NO bid level).
 
+    Price levels are sorted ascending; the **best (highest) bid is the last element**
+    in each array (Kalshi orderbook API). An empty side yields no bid and no derived ask.
+
     ``orderbook_json`` may be either the full response (with ``orderbook_fp``) or the inner book.
     """
     ob = orderbook_json.get("orderbook_fp", orderbook_json)
     yes_levels = ob.get("yes_dollars") or []
     no_levels = ob.get("no_dollars") or []
 
-    best_yes = yes_levels[0] if yes_levels else None
-    best_no = no_levels[0] if no_levels else None
+    best_yes = yes_levels[-1] if yes_levels else None
+    best_no = no_levels[-1] if no_levels else None
 
     best_yes_bid_cents: int | None = None
     best_no_bid_cents: int | None = None

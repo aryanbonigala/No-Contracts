@@ -662,15 +662,26 @@ def list_backtest_runs(session: Session, *, limit: int = 200) -> list[BacktestRu
     return list(session.scalars(stmt).all())
 
 
-def delete_backtest_run(session: Session, run_id: str) -> bool:
+def delete_backtest_run(session: Session, run_id: str) -> tuple[bool, int]:
+    """
+    Delete ``backtest_trades`` then ``backtest_runs`` for ``run_id``.
+
+    Returns ``(prior_run_row_deleted, prior_trade_row_count)`` where the trade count is
+    measured before deletes (for diagnostics / idempotent persistence summaries).
+    """
     rid = (run_id or "").strip()
+    n_trades = session.scalar(
+        select(func.count()).select_from(BacktestTrade).where(BacktestTrade.run_id == rid)
+    )
+    n_trades_i = int(n_trades or 0)
     row = session.get(BacktestRun, rid)
     if row is None:
-        return False
-    # Explicit child delete for SQLite sessions without FK CASCADE enforcement.
+        if n_trades_i:
+            session.execute(delete(BacktestTrade).where(BacktestTrade.run_id == rid))
+        return False, n_trades_i
     session.execute(delete(BacktestTrade).where(BacktestTrade.run_id == rid))
     session.delete(row)
-    return True
+    return True, n_trades_i
 
 
 def list_research_feature_rows(
