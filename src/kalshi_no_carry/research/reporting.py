@@ -56,6 +56,16 @@ def format_ratio(numerator: Any, denominator: Any) -> str:
         return "—"
 
 
+def format_ratio_display(value: Any) -> str:
+    """Format a fractional ratio already stored as a float in ``[0, 1]`` (or ``None``)."""
+    try:
+        if value is None:
+            return "—"
+        return f"{float(value):.1%}"
+    except (TypeError, ValueError):
+        return "—"
+
+
 def extract_high_level_counts(summary: dict[str, Any]) -> dict[str, Any]:
     h = dict(summary.get("high_level_counts") or {})
     aud = summary.get("audit_summary") or {}
@@ -75,6 +85,17 @@ def extract_high_level_counts(summary: dict[str, Any]) -> dict[str, Any]:
             out[k] = h[k]
         elif k in aud:
             out[k] = aud[k]
+    cc = aud.get("collection_coverage") if isinstance(aud, dict) else None
+    if isinstance(cc, dict):
+        for k in (
+            "executable_no_ask_coverage_ratio",
+            "executable_yes_ask_coverage_ratio",
+            "scorable_feature_row_ratio",
+            "orderbook_snapshots_total",
+            "orderbook_snapshots_empty_executable",
+        ):
+            if k in cc and cc[k] is not None:
+                out[k] = cc[k]
     return out
 
 
@@ -397,7 +418,40 @@ def build_research_audit_report(summary: dict[str, Any]) -> str:
     lines.append(f"- **research_feature_rows_count:** {format_count(hlc.get('research_feature_rows_count'))}")
     lines.append(f"- **scorable_feature_rows:** {format_count(hlc.get('scorable_feature_rows'))}")
     lines.append(f"- **unscorable_feature_rows:** {format_count(hlc.get('unscorable_feature_rows'))}")
+    lines.append(f"- **executable NO ask ratio (snapshots):** {format_ratio_display(hlc.get('executable_no_ask_coverage_ratio'))}")
+    lines.append(f"- **scorable feature-row ratio (audit slice):** {format_ratio_display(hlc.get('scorable_feature_row_ratio'))}")
     lines.append("")
+
+    cc = aud.get("collection_coverage") if isinstance(aud, dict) else None
+    if isinstance(cc, dict) and cc.get("coverage_version"):
+        lines.append("## Stored collection coverage (data readiness)\n")
+        lines.append("_Diagnostics describe offline dataset completeness — not trading recommendations._\n")
+        rms = cc.get("raw_markets_by_status") or {}
+        if rms:
+            lines.append("- **raw_markets_by_status (ORM column):**")
+            for k in sorted(rms.keys()):
+                lines.append(f"  - `{k}`: {format_count(rms.get(k))}")
+        lbl = cc.get("labels_by_result") or {}
+        if lbl:
+            lines.append("- **labels_by_result:**")
+            for k in sorted(lbl.keys()):
+                lines.append(f"  - `{k}`: {format_count(lbl.get(k))}")
+        lines.append(f"- **orderbook_snapshots_total:** {format_count(cc.get('orderbook_snapshots_total'))}")
+        lines.append(
+            f"- **snapshots with YES bids / NO bids:** {format_count(cc.get('orderbook_snapshots_with_yes_bids'))} / "
+            f"{format_count(cc.get('orderbook_snapshots_with_no_bids'))}"
+        )
+        lines.append(f"- **snapshots empty executable asks:** {format_count(cc.get('orderbook_snapshots_empty_executable'))}")
+        notes = cc.get("data_readiness_notes") or []
+        if notes:
+            lines.append("- **data readiness notes:**")
+            for n in notes:
+                lines.append(f"  - {n}")
+        lines.append("")
+    elif isinstance(aud, dict) and aud:
+        lines.append("## Stored collection coverage (data readiness)\n")
+        lines.append("_Collection coverage block unavailable (audit summary missing collection_coverage)._")
+        lines.append("")
 
     lines.append("## Split coverage\n")
     by_split = feat.get("feature_rows_by_split") or {}

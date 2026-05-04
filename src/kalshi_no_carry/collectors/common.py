@@ -68,6 +68,46 @@ class CollectorSummary:
 
 
 @dataclass
+class MultiStatusMarketsSummary:
+    """Markets collector across one or more API ``status`` filters (Kalshi allows one per request)."""
+
+    name: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    requested_statuses: list[str | None] = field(default_factory=list)
+    """``None`` means unfiltered / API-default single pass."""
+    status_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    records_seen: int = 0
+    records_written: int = 0
+    fetched_pages: int = 0
+    duplicate_tickers_skipped: int = 0
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    success: bool = True
+    ids_collected: list[str] = field(default_factory=list)
+
+    def to_public_dict(self) -> dict[str, Any]:
+        keys = []
+        for s in self.requested_statuses:
+            keys.append("__api_default__" if s is None else str(s))
+        return {
+            "name": self.name,
+            "started_at": self.started_at.isoformat(),
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "requested_statuses": keys,
+            "status_results": json_safe_collector_value(self.status_results),
+            "records_seen": self.records_seen,
+            "records_written": self.records_written,
+            "fetched_pages": self.fetched_pages,
+            "duplicate_tickers_skipped": self.duplicate_tickers_skipped,
+            "success": self.success,
+            "errors": list(self.errors),
+            "warnings": list(self.warnings),
+            "ids_collected_count": len(self.ids_collected),
+        }
+
+
+@dataclass
 class OrderbookCollectionSummary:
     """Summary for per-ticker orderbook snapshots."""
 
@@ -77,6 +117,12 @@ class OrderbookCollectionSummary:
     tickers_attempted: int = 0
     snapshots_inserted: int = 0
     tickers_failed: int = 0
+    tickers_succeeded: int = 0
+    books_with_yes_bids: int = 0
+    books_with_no_bids: int = 0
+    books_empty_both_sides: int = 0
+    books_with_executable_no_ask: int = 0
+    books_with_executable_yes_ask: int = 0
     errors: list[str] = field(default_factory=list)
     success: bool = True
 
@@ -86,8 +132,14 @@ class OrderbookCollectionSummary:
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "tickers_attempted": self.tickers_attempted,
+            "tickers_succeeded": self.tickers_succeeded,
             "snapshots_inserted": self.snapshots_inserted,
             "tickers_failed": self.tickers_failed,
+            "books_with_yes_bids": self.books_with_yes_bids,
+            "books_with_no_bids": self.books_with_no_bids,
+            "books_empty_both_sides": self.books_empty_both_sides,
+            "books_with_executable_no_ask": self.books_with_executable_no_ask,
+            "books_with_executable_yes_ask": self.books_with_executable_yes_ask,
             "success": self.success,
             "errors": list(self.errors),
         }
@@ -97,8 +149,9 @@ class OrderbookCollectionSummary:
 class ActiveMarketsOrderbookSummary:
     """Combined market load + orderbook pull for active/open markets."""
 
-    markets: CollectorSummary
+    markets: CollectorSummary | MultiStatusMarketsSummary
     orderbooks: OrderbookCollectionSummary
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def success(self) -> bool:
@@ -113,12 +166,15 @@ class ActiveMarketsOrderbookSummary:
         md = self.markets.to_public_dict()
         od = self.orderbooks.to_public_dict()
         finished = od.get("finished_at") or md.get("finished_at")
+        rec_seen = int(md.get("records_seen") or 0) + int(od.get("tickers_attempted") or 0)
+        rec_written = int(md.get("records_written") or 0) + int(od.get("snapshots_inserted") or 0)
         return {
             "success": self.success,
             "errors": self.errors,
-            "records_seen": int(md["records_seen"]) + int(od["tickers_attempted"]),
-            "records_written": int(md["records_written"]) + int(od["snapshots_inserted"]),
-            "ids_collected_count": int(md["ids_collected_count"]),
+            "warnings": list(self.warnings),
+            "records_seen": rec_seen,
+            "records_written": rec_written,
+            "ids_collected_count": int(md.get("ids_collected_count") or 0),
             "started_at": md["started_at"],
             "finished_at": finished,
             "markets": md,
@@ -212,6 +268,11 @@ def normalize_collector_summary(summary: Any, stage_name: str) -> dict[str, Any]
         detail = {"_unstructured_detail": detail}
 
     errors = _gather_collector_errors(detail, summary)
+
+    if isinstance(detail.get("warnings"), list):
+        for w in detail["warnings"]:
+            if isinstance(w, str) and w.strip():
+                norm_warnings.append(w.strip())
 
     explicit_success: bool | None = None
     if hasattr(summary, "success"):

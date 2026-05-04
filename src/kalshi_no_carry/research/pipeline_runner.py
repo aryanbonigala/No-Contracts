@@ -26,6 +26,36 @@ from kalshi_no_carry.research.backtest_no_carry import run_no_carry_backtest_per
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_PIPELINE_VERSION = "v0.9_research_pipeline_runner"
 
+COLLECT_STATUS_SET_CHOICES = frozenset({"active_and_resolved", "all_basic"})
+
+
+def resolve_requested_market_statuses(
+    *,
+    market_statuses: tuple[str, ...],
+    collect_status_set: str | None,
+) -> tuple[str, ...] | None:
+    """
+    Build an ordered unique sequence of Kalshi market ``status`` query values.
+
+    ``None`` means a single unfiltered listing pass (no ``status`` query parameter).
+    """
+    seq: list[str] = []
+    if collect_status_set == "active_and_resolved":
+        seq.extend(["open", "settled"])
+    elif collect_status_set == "all_basic":
+        seq.extend(["open", "closed", "settled"])
+    for s in market_statuses:
+        t = str(s).strip().lower()
+        if t:
+            seq.append(t)
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in seq:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return tuple(out) if out else None
+
 
 class ResearchPipelineConfig(BaseModel):
     """Ordered stages for materializing research artifacts from stored (or freshly collected) DB state."""
@@ -57,9 +87,17 @@ class ResearchPipelineConfig(BaseModel):
     max_no_ask_cents: int = Field(default=95, ge=0, le=100)
     min_no_ask_cents: int = Field(default=1, ge=0, le=100)
     collect_max_pages: int = Field(default=1, ge=1)
+    market_statuses: tuple[str, ...] = Field(default_factory=tuple)
+    collect_status_set: str | None = None
+    """Generic coverage presets only (``active_and_resolved`` | ``all_basic``); not strategy selectors."""
+    orderbook_source_status: str = Field(default="open", min_length=1)
 
     @model_validator(mode="after")
-    def _ask_bounds(self) -> ResearchPipelineConfig:
+    def _pipeline_constraints(self) -> ResearchPipelineConfig:
+        if self.collect_status_set is not None and self.collect_status_set not in COLLECT_STATUS_SET_CHOICES:
+            raise ValueError(
+                f"collect_status_set must be one of {sorted(COLLECT_STATUS_SET_CHOICES)} or omitted (got {self.collect_status_set!r})"
+            )
         if int(self.min_no_ask_cents) > int(self.max_no_ask_cents):
             raise ValueError("min_no_ask_cents must be <= max_no_ask_cents")
         return self
@@ -236,26 +274,35 @@ def run_research_pipeline(
         else:
             try:
                 from kalshi_no_carry.collectors.events import collect_events
-                from kalshi_no_carry.collectors.markets import collect_markets
+                from kalshi_no_carry.collectors.markets import collect_markets_multi_status
 
                 lim = int(config.limit or 100)
+                resolved_statuses = resolve_requested_market_statuses(
+                    market_statuses=config.market_statuses,
+                    collect_status_set=config.collect_status_set,
+                )
                 ev = collect_events(
                     kalshi_client,
                     engine,
                     limit=lim,
                     max_pages=config.collect_max_pages,
                 )
-                mk = collect_markets(
+                mk = collect_markets_multi_status(
                     kalshi_client,
                     engine,
+                    market_statuses=resolved_statuses,
                     limit=lim,
                     max_pages=config.collect_max_pages,
                 )
+                req_display = ["__api_default__"] if resolved_statuses is None else list(resolved_statuses)
                 stages["collect_markets"] = {
                     "stage_name": "collect_markets",
                     "enabled": True,
                     "success": bool(ev.success and mk.success),
-                    "warnings": list(ev.errors) + list(mk.errors),
+                    "warnings": list(ev.errors) + list(mk.errors) + list(mk.warnings),
+                    "requested_market_statuses": req_display,
+                    "duplicate_tickers_skipped": mk.duplicate_tickers_skipped,
+                    "status_results": dict(mk.status_results),
                     "events": ev.to_public_dict(),
                     "markets": mk.to_public_dict(),
                 }
@@ -316,6 +363,7 @@ def run_research_pipeline(
                         engine,
                         limit=lim,
                         max_pages=config.collect_max_pages,
+                        orderbook_source_status=str(config.orderbook_source_status).strip(),
                     )
                     nd = normalize_collector_summary(ob, "collect_orderbooks")
                     stages["collect_orderbooks"] = {
@@ -585,6 +633,19 @@ def _finalize(
         ):
             if key in audit_summary:
                 high_level_counts[key] = audit_summary[key]
+        cc = audit_summary.get("collection_coverage") or {}
+        if isinstance(cc, dict):
+            for key in (
+                "executable_no_ask_coverage_ratio",
+                "executable_yes_ask_coverage_ratio",
+                "scorable_feature_row_ratio",
+                "orderbook_snapshots_total",
+                "orderbook_snapshots_empty_executable",
+                "orderbook_snapshots_with_yes_bids",
+                "orderbook_snapshots_with_no_bids",
+            ):
+                if key in cc and cc[key] is not None:
+                    high_level_counts[key] = cc[key]
 
     body: dict[str, Any] = {
         "pipeline_version": config.pipeline_version,
@@ -606,7 +667,9 @@ def _finalize(
 
 
 __all__ = [
+    "COLLECT_STATUS_SET_CHOICES",
     "ResearchPipelineConfig",
     "recommend_next_action",
+    "resolve_requested_market_statuses",
     "run_research_pipeline",
 ]

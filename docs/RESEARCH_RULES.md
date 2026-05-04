@@ -84,4 +84,10 @@ These rules exist to keep the Kalshi **NO carry** study statistically honest and
 42. **No manual DB cleanup for reruns:** when **`run_no_carry_backtest_persisted`** writes **`backtest_runs`** / **`backtest_trades`**, repeating the **same** configuration must **not** require deleting rows by hand. The harness replaces the prior deterministic **`run_id`** in one transaction instead of failing on a unique constraint.
 43. **Fix extraction before modeling:** if **`audit_orderbook_prices.py`** shows raw books support implied asks but **`research_feature_rows`** lack **`no_ask_cents`**, treat that as a **data pipeline bug** to fix (re-ingest / rebuild features) — not as a signal to patch models around bad rows.
 
+## Public repository alpha hygiene (v0.13)
+
+44. **No proprietary strategy selection in public code:** this repository must **not** encode alpha-specific market picking, profitable category filters, threshold tuning hooks marketed as “best”, or secret ranking/scoring rules intended only for production trading research.
+45. **Generic coverage tooling only:** CLI flags such as **`--market-status`**, **`--collect-status-set`**, and **`--orderbook-source-status`** exist to widen **honest offline dataset coverage** (status mixes, liquidity diagnostics). They must **not** be repurposed as thin wrappers around undisclosed edge logic.
+46. **Private alpha stays private:** strategy-specific modules, tuned parameters, and proprietary notebooks belong in **ignored local paths** or a **private repository**; wire them only through **explicit local imports** or documented extension points — never commit them here.
+
 For engineering context, see `ARCHITECTURE.md`. For table-level details, see `DATA_SCHEMA.md`.

@@ -1,10 +1,12 @@
-# Architecture (v0.12 — collectors + pipeline + reporting + orderbook audit + splits + features + labels + audit + backtest + Alembic)
+# Architecture (v0.13 — coverage-oriented collection + pipeline + reporting + orderbook audit + splits + features + labels + audit + backtest + Alembic)
 
 ## Purpose
 
 This codebase supports **offline research** for a Kalshi thesis around **NO** contracts: identify potential mispricing after costs (fees, spread), ambiguity, and correlation — **without live trading**.
 
 **v0.5** adds **deterministic clustering and splits** on top of **v0.4** collectors. **v0.6** adds **`research_feature_rows`**. **v0.7** adds the **read-only backtest harness** (`backtest_runs` / `backtest_trades`). **v0.8** adds **`research_market_labels`** from **`raw_markets`** (`research/outcomes.py`), optional merge into feature rows via **`--label-version`**, and **`research/dataset_audit.py`** for coverage metrics. **v0.9** adds **`research/pipeline_runner.py`**: ordered orchestration (optional migrate/collectors, splits, labels, features with `label_version`, audit, optional backtest) with one safe JSON summary. **v0.10** adds **`research/reporting.py`**: Markdown + readiness **`compute_research_readiness`** from pipeline outputs (`scripts/run_research_report.py`). **v0.11** ensures **`collectors.common.normalize_collector_summary`** flattens each collector return value (dataclass, dict, or Pydantic) into a **JSON-serializable** stage payload with a consistent **`success`** bit before it is merged into **`run_research_pipeline`** output (fixes composite orderbook summaries that only exposed nested **`success`** fields). **v0.12** adds **`research/orderbook_audit.py`**: read-only inspection of **`raw_orderbook_snapshots`** (shape + implied executable NO/YES asks) to separate **empty books**, **unrecognized JSON**, and **feature-row extraction gaps**; **`run_no_carry_backtest_persisted`** completes reads and writes in **separate SQLAlchemy transactional scopes** to avoid nested **`begin()`** errors, and **replaces** any existing persisted row for the same **deterministic `run_id`** (UUIDv5 over canonical config) in **one transaction** when persisting so reruns stay idempotent. Labels support **scoring and audits**, not pricing-feature inputs.
+
+**v0.13** adds **status-aware market listing** (`collect_markets_multi_status`): Kalshi allows one ``status`` filter per request, so the collector **loops** statuses and merges tickers with duplicate-skipping diagnostics for coverage-oriented datasets. **Orderbook collection** records per-book **liquidity / executable-quote** counters using **`orderbook_json_coverage_flags`**, supports **`orderbook_source_status`** (default **open**), and warns when sourcing books from non-open listings. **`research/collection_coverage.py`** aggregates **stored** market-status mixes, label-result histograms, snapshot executable ratios, and **data_readiness_notes** (embedded into **`audit_research_dataset`** and Markdown reports). **v0.12** orderbook price audit + **idempotent persisted backtests** remain below.
 
 ## Process boundaries
 
@@ -135,6 +137,7 @@ flowchart LR
 | `kalshi_no_carry.research.feature_dataset` | `JoinedFeatureSource`, `build_feature_row_from_joined_record`, **`build_research_feature_rows_pipeline`**, validation |
 | `kalshi_no_carry.research.outcomes` | Deterministic `extract_market_outcome_label*`, label builder from `raw_markets` |
 | `kalshi_no_carry.research.dataset_audit` | `audit_research_dataset` coverage / join diagnostics |
+| `kalshi_no_carry.research.collection_coverage` | v0.13 **`summarize_collection_coverage`** stored-ingestion readiness metrics |
 | `kalshi_no_carry.research.backtest_config` | Versioned `BacktestConfig` (Pydantic) for read-only runs |
 | `kalshi_no_carry.research.pipeline_runner` | v0.9 **`ResearchPipelineConfig`**, **`run_research_pipeline`**, **`recommend_next_action`** |
 | `kalshi_no_carry.research.orderbook_audit` | v0.12 **`audit_orderbook_price_extraction`**: read-only orderbook JSON + executable price diagnostics |

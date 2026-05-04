@@ -113,3 +113,5 @@ def test_audit_feature_counts_and_labels(session_factory, memory_engine) -> None
     assert out["feature_rows_with_complete_prices"] == 1
     assert out["feature_rows_by_split"]["train"] == 1
     assert out["resolved_no_count"] == 1
+    assert "collection_coverage" in out
+    assert out["collection_coverage"]["coverage_version"]

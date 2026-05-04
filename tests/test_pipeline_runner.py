@@ -40,7 +40,7 @@ def test_pipeline_does_not_call_collectors_when_disabled(memory_engine) -> None:
         run_audit=False,
     )
     with patch("kalshi_no_carry.collectors.events.collect_events") as ce:
-        with patch("kalshi_no_carry.collectors.markets.collect_markets") as cm:
+        with patch("kalshi_no_carry.collectors.markets.collect_markets_multi_status") as cm:
             with patch("kalshi_no_carry.collectors.orderbooks.collect_orderbooks_for_active_markets") as co:
                 run_research_pipeline(memory_engine, cfg, kalshi_client=None)
     ce.assert_not_called()

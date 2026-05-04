@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
+from typing import Any, Mapping
 
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
@@ -11,6 +11,50 @@ from sqlalchemy.orm import sessionmaker
 
 from kalshi_no_carry.db.schema import RawOrderbookSnapshot, ResearchFeatureRow
 from kalshi_no_carry.kalshi_client import derive_executable_prices_from_orderbook
+
+
+def orderbook_json_coverage_flags(orderbook_json: Mapping[str, Any]) -> dict[str, Any]:
+    """
+    Single-orderbook coverage flags for collector summaries (read-only; no HTTP).
+
+    Executable NO ask is counted only when derived ``best_no_ask_cents`` is present
+    (typically requires a YES bid side for Kalshi bid-implied asks).
+    """
+    raw = dict(orderbook_json)
+    inner = _orderbook_inner(raw)
+    yes_nonempty = False
+    no_nonempty = False
+    if inner is not None:
+        yl, nl = _level_lists(inner)
+        yes_nonempty = _nonempty_level_rows(yl) > 0
+        no_nonempty = _nonempty_level_rows(nl) > 0
+
+    ex: dict[str, Any] = {}
+    parse_ok = True
+    try:
+        ex = derive_executable_prices_from_orderbook(raw)
+    except Exception:
+        parse_ok = False
+
+    byb = ex.get("best_yes_bid_cents")
+    bnb = ex.get("best_no_bid_cents")
+    no_ask = ex.get("best_no_ask_cents")
+    yes_ask = ex.get("best_yes_ask_cents")
+
+    books_with_yes_bids = bool(yes_nonempty or (byb is not None))
+    books_with_no_bids = bool(no_nonempty or (bnb is not None))
+    books_empty_both_sides = bool(inner is None or (not books_with_yes_bids and not books_with_no_bids))
+    books_with_executable_no_ask = bool(no_ask is not None)
+    books_with_executable_yes_ask = bool(yes_ask is not None)
+
+    return {
+        "parse_ok": parse_ok,
+        "books_with_yes_bids": books_with_yes_bids,
+        "books_with_no_bids": books_with_no_bids,
+        "books_empty_both_sides": books_empty_both_sides,
+        "books_with_executable_no_ask": books_with_executable_no_ask,
+        "books_with_executable_yes_ask": books_with_executable_yes_ask,
+    }
 
 
 def _fingerprint_keys(d: dict[str, Any] | None) -> tuple[str, ...]:
@@ -226,4 +270,4 @@ def audit_orderbook_price_extraction(
     return out
 
 
-__all__ = ["audit_orderbook_price_extraction"]
+__all__ = ["audit_orderbook_price_extraction", "orderbook_json_coverage_flags"]

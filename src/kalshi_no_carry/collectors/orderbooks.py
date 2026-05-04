@@ -14,8 +14,9 @@ from kalshi_no_carry.collectors.common import (
     safe_error_message,
     utc_now,
 )
-from kalshi_no_carry.collectors.markets import collect_markets
+from kalshi_no_carry.collectors.markets import collect_markets_multi_status
 from kalshi_no_carry.db.repositories import insert_orderbook_snapshot, record_api_fetch
+from kalshi_no_carry.research.orderbook_audit import orderbook_json_coverage_flags
 
 ORDERBOOK_LOG_ENDPOINT = "/markets/{ticker}/orderbook"
 
@@ -58,6 +59,18 @@ def collect_orderbooks_for_markets(
                 )
                 session.commit()
                 summary.snapshots_inserted += 1
+                summary.tickers_succeeded += 1
+                flags = orderbook_json_coverage_flags(ob if isinstance(ob, dict) else {})
+                if flags.get("books_with_yes_bids"):
+                    summary.books_with_yes_bids += 1
+                if flags.get("books_with_no_bids"):
+                    summary.books_with_no_bids += 1
+                if flags.get("books_empty_both_sides"):
+                    summary.books_empty_both_sides += 1
+                if flags.get("books_with_executable_no_ask"):
+                    summary.books_with_executable_no_ask += 1
+                if flags.get("books_with_executable_yes_ask"):
+                    summary.books_with_executable_yes_ask += 1
             except Exception as exc:
                 session.rollback()
                 msg = safe_error_message(exc)
@@ -89,7 +102,7 @@ def collect_orderbooks_for_active_markets(
     *,
     limit: int = 100,
     max_pages: int = 1,
-    status: str = "open",
+    orderbook_source_status: str = "open",
     depth: int | None = None,
     source: str = "kalshi",
     fail_fast: bool = False,
@@ -97,13 +110,23 @@ def collect_orderbooks_for_active_markets(
 ) -> ActiveMarketsOrderbookSummary:
     """
     Load markets (upsert), then fetch orderbooks for returned tickers.
+
+    ``orderbook_source_status`` selects which market listing status seeds tickers (default ``open``).
     """
-    msum = collect_markets(
+    warnings: list[str] = []
+    oss = str(orderbook_source_status).strip().lower()
+    if oss != "open":
+        warnings.append(
+            "Orderbooks are generally expected for open/active markets; non-open statuses may return "
+            "empty or unavailable books."
+        )
+
+    msum = collect_markets_multi_status(
         client,
         engine,
+        market_statuses=(oss,),
         limit=limit,
         max_pages=max_pages,
-        status=status,
         source=source,
     )
     osum = collect_orderbooks_for_markets(
@@ -115,4 +138,4 @@ def collect_orderbooks_for_active_markets(
         fail_fast=fail_fast,
         sleep_seconds=sleep_seconds,
     )
-    return ActiveMarketsOrderbookSummary(markets=msum, orderbooks=osum)
+    return ActiveMarketsOrderbookSummary(markets=msum, orderbooks=osum, warnings=warnings)

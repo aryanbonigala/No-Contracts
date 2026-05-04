@@ -48,6 +48,24 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Fetch orderbooks from Kalshi (requires credentials; off by default)",
     )
+    p.add_argument(
+        "--market-status",
+        action="append",
+        dest="market_statuses",
+        default=None,
+        help="Kalshi /markets status filter (repeat for multiple; each status is a separate API pass)",
+    )
+    p.add_argument(
+        "--collect-status-set",
+        choices=["active_and_resolved", "all_basic"],
+        default=None,
+        help="Coverage preset: open+settled or open+closed+settled (merged with --market-status)",
+    )
+    p.add_argument(
+        "--orderbook-source-status",
+        default="open",
+        help="Market listing status used to seed tickers for --collect-orderbooks (default: open)",
+    )
     p.add_argument("--market-ticker", action="append", dest="market_tickers", default=None)
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--skip-splits", action="store_true")
@@ -83,6 +101,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.market_tickers:
         tickers = tuple(sorted({str(t).strip() for t in args.market_tickers if str(t).strip()}))
 
+    ms_ordered: list[str] = []
+    if args.market_statuses:
+        seen_ms: set[str] = set()
+        for x in args.market_statuses:
+            t = str(x).strip().lower()
+            if t and t not in seen_ms:
+                seen_ms.add(t)
+                ms_ordered.append(t)
+
     try:
         cfg = ResearchPipelineConfig(
             pipeline_version=str(args.pipeline_version).strip(),
@@ -108,6 +135,9 @@ def main(argv: list[str] | None = None) -> int:
             overwrite_splits=bool(args.overwrite_splits),
             max_no_ask_cents=int(args.max_no_ask_cents),
             min_no_ask_cents=int(args.min_no_ask_cents),
+            market_statuses=tuple(ms_ordered),
+            collect_status_set=args.collect_status_set,
+            orderbook_source_status=str(args.orderbook_source_status).strip(),
         )
     except ValueError as e:
         print(json.dumps({"success": False, "error": str(e)}), flush=True)

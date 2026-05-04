@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from kalshi_no_carry.research.collection_coverage import feature_row_is_scorable, summarize_collection_coverage
 from kalshi_no_carry.db.schema import (
     EventCluster,
     RawMarket,
@@ -142,12 +143,7 @@ def audit_research_dataset(
             else:
                 out["unknown_label_count"] += 1
 
-            scorable = (
-                r.has_complete_executable_prices
-                and r.no_ask_cents is not None
-                and not (r.label_is_void or (lm == "void"))
-                and ((r.label_no_won is True or r.label_no_won is False) or (lm in ("yes", "no")))
-            )
+            scorable = feature_row_is_scorable(r)
             if scorable:
                 out["scorable_feature_rows"] += 1
             else:
@@ -160,6 +156,18 @@ def audit_research_dataset(
         out["snapshots_without_raw_market"] = _count_snapshots_without_market(session)
         out["markets_missing_cluster_by_event_ticker"] = _count_markets_missing_cluster(session)
         out["clusters_missing_split_for_version"] = _count_clusters_missing_split(session, sv)
+
+    cc = summarize_collection_coverage(
+        engine,
+        split_version=sv,
+        feature_version=fv,
+        label_version=lv_opt,
+        include_test=include_test,
+    )
+    out["collection_coverage"] = cc
+    for note in cc.get("data_readiness_notes") or []:
+        if isinstance(note, str) and note.strip():
+            warnings.append(note)
 
     return out
 

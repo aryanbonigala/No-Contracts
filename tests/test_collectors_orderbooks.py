@@ -45,6 +45,19 @@ class FakeOBClient:
         return _book()
 
 
+def test_collect_orderbooks_warns_when_non_open_source_status():
+    engine = create_engine_from_database_url("sqlite+pysqlite:///:memory:")
+    create_all_tables(engine)
+    try:
+        out = collect_orderbooks_for_active_markets(
+            FakeOBClient(), engine, limit=50, max_pages=1, orderbook_source_status="settled", source="t"
+        )
+        assert any("open/active" in w.lower() for w in out.warnings)
+    finally:
+        drop_all_tables(engine)
+        engine.dispose()
+
+
 def test_collect_orderbooks_inserts_snapshots_and_executable_fields():
     engine = create_engine_from_database_url("sqlite+pysqlite:///:memory:")
     create_all_tables(engine)
@@ -54,6 +67,12 @@ def test_collect_orderbooks_inserts_snapshots_and_executable_fields():
         summ = collect_orderbooks_for_markets(c, engine, ["M1"], source="t")
         assert summ.success
         assert summ.snapshots_inserted == 1
+        assert summ.tickers_succeeded == 1
+        assert summ.books_with_yes_bids >= 1
+        assert summ.books_with_no_bids >= 1
+        assert summ.books_empty_both_sides == 0
+        assert summ.books_with_executable_no_ask >= 1
+        assert summ.books_with_executable_yes_ask >= 1
         with Session() as s:
             row = s.scalars(select(RawOrderbookSnapshot)).one()
             assert row.market_ticker == "M1"
@@ -103,7 +122,7 @@ def test_collect_orderbooks_for_active_markets_chain():
     try:
         c = FakeOBClient()
         out = collect_orderbooks_for_active_markets(
-            c, engine, limit=50, max_pages=1, status="open", source="t"
+            c, engine, limit=50, max_pages=1, orderbook_source_status="open", source="t"
         )
         assert out.markets.success
         assert out.success
@@ -112,6 +131,24 @@ def test_collect_orderbooks_for_active_markets_chain():
         with Session() as s:
             assert s.scalar(select(func.count()).select_from(RawMarket)) == 2
             assert s.scalar(select(func.count()).select_from(RawOrderbookSnapshot)) == 2
+    finally:
+        drop_all_tables(engine)
+        engine.dispose()
+
+
+def test_collect_orderbooks_coverage_counters_empty_book():
+    engine = create_engine_from_database_url("sqlite+pysqlite:///:memory:")
+    create_all_tables(engine)
+    try:
+
+        class _C:
+            def get_orderbook(self, ticker: str, depth=None):
+                return {"orderbook_fp": {"yes_dollars": [], "no_dollars": []}}
+
+        summ = collect_orderbooks_for_markets(_C(), engine, ["M1"], source="t")
+        assert summ.books_empty_both_sides == 1
+        assert summ.books_with_executable_no_ask == 0
+        assert summ.tickers_succeeded == 1
     finally:
         drop_all_tables(engine)
         engine.dispose()

@@ -1,10 +1,10 @@
-# Kalshi NO Carry (v0.12 — orderbook price extraction audit + backtest session fix; read-only)
+# Kalshi NO Carry (v0.13 — coverage-oriented collection + collection readiness audits; read-only)
 
 Production-oriented **research** codebase for testing a statistical thesis on Kalshi binary markets:
 
 **Thesis (informal):** there may be edge in buying high-confidence **NO** contracts when the market-implied NO price is below the "true" NO probability after adjusting for fees, spread, ambiguity risk, and correlated event risk.
 
-This repository is **v0.12.0** (`Kalshi_NO_Carry_v0.12_OrderbookPriceExtractionAndBacktestSessionFix`). **v0.12** fixes **persisted backtest** SQLAlchemy session handling (no nested `begin()` after reads), adds **`research/orderbook_audit.py`** + **`scripts/audit_orderbook_prices.py`** for read-only diagnosis of stored orderbooks, and corrects **best-bid** selection in **`derive_executable_prices_from_orderbook`** (Kalshi lists bids **ascending**; the **best** bid is the **last** level — previously the code used the first/worst level). **v0.11** collector summary normalization, **v0.10** reporting, **v0.9** pipeline, **v0.8** labels, **v0.7** backtests remain below.
+This repository is **v0.13.0** (`Kalshi_NO_Carry_v0.13_CoverageOrientedCollectionAndLabelBackfill`). **v0.13** adds **status-aware market listing** (multiple Kalshi ``status`` values via separate API passes), **orderbook pull diagnostics** (executable-quote counts per captured book), **`research/collection_coverage.py`** embedded into **`audit_research_dataset`**, optional **`scripts/audit_collection_coverage.py`** for read-only JSON summaries, and **CLI presets** ``--collect-status-set active_and_resolved|all_basic`` for generic dataset breadth — **not** strategy selectors. **v0.12** orderbook audit / idempotent backtests remain below.
 
 ## Safety / scope
 
@@ -17,8 +17,8 @@ This repository is **v0.12.0** (`Kalshi_NO_Carry_v0.12_OrderbookPriceExtractionA
 
 - `src/kalshi_no_carry/collectors/` — `events.py`, `markets.py`, `orderbooks.py`, `common.py`
 - `src/kalshi_no_carry/db/` — schema + repositories
-- `src/kalshi_no_carry/research/` — clustering, splits, **`features.py`**, **`feature_dataset.py`**, **`orderbook_audit.py`**, **`outcomes.py`**, **`dataset_audit.py`**, **`pipeline_runner.py`**, **`reporting.py`**, **`backtest_config.py`**, **`backtest_no_carry.py`**, `build_splits.py`
-- `scripts/` — collectors, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`audit_orderbook_prices.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, **`run_backtest.py`**, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
+- `src/kalshi_no_carry/research/` — clustering, splits, **`features.py`**, **`feature_dataset.py`**, **`orderbook_audit.py`**, **`collection_coverage.py`**, **`outcomes.py`**, **`dataset_audit.py`**, **`pipeline_runner.py`**, **`reporting.py`**, **`backtest_config.py`**, **`backtest_no_carry.py`**, `build_splits.py`
+- `scripts/` — collectors, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`audit_orderbook_prices.py`**, **`audit_collection_coverage.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, **`run_backtest.py`**, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
 - `alembic/` — versioned DDL (see **Database setup** below)
 - `tests/` — fakes + SQLite in-memory (**no live Kalshi or Postgres required** for default pytest)
 
@@ -34,7 +34,7 @@ pip install -e ".[dev]"
 ## Configuration
 
 - **Kalshi:** `KALSHI_BASE_URL` (full `…/trade-api/v2`), optional auth env vars — see `.env.example`.
-- **Database:** **`DATABASE_URL` is required** for collector scripts, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, and **`run_backtest.py`** (Postgres recommended on a VM; `scripts/check_env.py` shows a **redacted** preview). **Offline unit tests** use SQLite in-memory and do not need `DATABASE_URL`.
+- **Database:** **`DATABASE_URL` is required** for collector scripts, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`audit_collection_coverage.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, and **`run_backtest.py`** (Postgres recommended on a VM; `scripts/check_env.py` shows a **redacted** preview). **Offline unit tests** use SQLite in-memory and do not need `DATABASE_URL`.
 
 ### Database setup (two options)
 
@@ -165,6 +165,50 @@ python scripts/audit_orderbook_prices.py --output-json reports/orderbook-price-a
 
 **Backtest note:** With **zero scorable** rows (missing labels or missing executable quotes), **`run_research_report.py --run-backtest`** / **`run_research_pipeline.py --run-backtest`** should still **complete**: **`scored_trades`** may be **0** with warnings — not a session crash.
 
+## Coverage-oriented collection (v0.13)
+
+Use **market status** filters to broaden **generic** offline coverage:
+
+- **Open** listings help **orderbook** snapshots (books are generally meaningful while markets are active).
+- **Settled** / **closed** listings help **outcome labels** and merged **`label_*`** fields on feature rows (because resolution fields live on raw market payloads — the extractor still **never** reads titles).
+
+Kalshi accepts **one** `status` query parameter per `/markets` page. The pipeline loops statuses **safely**, merges tickers, counts **`duplicate_tickers_skipped`** when the same ticker appears in multiple passes (rows are still upserted), and records **`requested_market_statuses`** / **`status_results`** in JSON.
+
+```bash
+python scripts/run_research_pipeline.py --collect-markets --market-status open --limit 100
+python scripts/run_research_pipeline.py --collect-markets --market-status settled --limit 500
+python scripts/run_research_pipeline.py --collect-markets --collect-status-set active_and_resolved --limit 200
+python scripts/run_research_pipeline.py --collect-orderbooks --limit 50 --orderbook-source-status open
+```
+
+**Label backfill pattern** (ingest settled rows, then rebuild labels/features in the same pipeline run — **not** live trading). Omit **`--skip-labels`** / **`--skip-features`** so **`--delete-existing-labels`** actually applies during **`build_labels`**.
+
+```bash
+python scripts/run_research_pipeline.py \
+  --collect-markets \
+  --market-status settled \
+  --limit 500 \
+  --delete-existing-labels
+```
+
+Example report refresh after rebuilding artifacts (local paths):
+
+```bash
+python scripts/run_research_report.py \
+  --report-name local-after-settled-backfill \
+  --overwrite-splits \
+  --delete-existing-labels \
+  --delete-existing-features \
+  --run-backtest
+```
+
+**Read-only coverage audit (no Kalshi HTTP):**
+
+```bash
+python scripts/audit_collection_coverage.py
+python scripts/audit_collection_coverage.py --show-breakdown --output-json reports/coverage-audit.json
+```
+
 ## End-to-end research pipeline (v0.9; requires `DATABASE_URL`)
 
 **`scripts/run_research_pipeline.py`** runs stages in order: optional **Alembic migrate** and **`create_all`**, **opt-in** `--collect-markets` / `--collect-orderbooks` (network + credentials), **build splits**, **build labels**, **build features** (with **`--label-version`**), **audit**, optional **`--run-backtest`**. It prints a **single JSON object** with per-stage summaries, **`high_level_counts`** (when audit ran), **`next_recommended_action`**, and **no secrets**.
@@ -172,6 +216,7 @@ python scripts/audit_orderbook_prices.py --output-json reports/orderbook-price-a
 - **Default:** **no Kalshi HTTP** — only reads/writes the database (same philosophy as running the individual scripts on a filled DB).
 - **Test split:** omitted by default; **`--include-test`** adds a loud **`TEST_SPLIT_INCLUDED`** warning in the summary.
 - **Skipping:** `--skip-splits`, `--skip-labels`, `--skip-features`, `--skip-audit`.
+- **Market listing:** `--market-status` (repeatable), `--collect-status-set active_and_resolved|all_basic`, **`--orderbook-source-status`** for **`--collect-orderbooks`** (default `open`; non-open emits a coverage warning).
 
 ```bash
 python scripts/run_research_pipeline.py
@@ -179,6 +224,7 @@ python scripts/run_research_pipeline.py --migrate
 python scripts/run_research_pipeline.py --delete-existing-labels --delete-existing-features
 python scripts/run_research_pipeline.py --run-backtest --max-no-ask-cents 95
 python scripts/run_research_pipeline.py --collect-markets --collect-orderbooks --limit 100   # explicit network
+python scripts/run_research_pipeline.py --collect-markets --market-status open --market-status settled --limit 100
 python scripts/run_research_pipeline.py --include-test --run-backtest   # sealed test — document why
 ```
 
@@ -236,6 +282,6 @@ Optional Postgres smoke: set `RUN_DB_INTEGRATION_TESTS=1` and `DATABASE_URL`.
 - [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) — tables including `research_feature_rows`, `research_market_labels`, `backtest_runs`, `backtest_trades`
 - [`docs/RESEARCH_RULES.md`](docs/RESEARCH_RULES.md) — leakage + sealed test + feature + label + backtest rules
 
-## Deferred (not in v0.12)
+## Deferred (not in v0.13)
 
-**Probability models**, **strategy optimization**, **order placement**, **portfolio**, **live execution** — v0.12 focuses on **orderbook diagnostics**, **correct executable derivation**, and **safe backtest persistence**; modeling and trading remain out of scope.
+**Probability models**, **strategy optimization**, **order placement**, **portfolio**, **live execution** — this repo focuses on **read-only ingestion**, **coverage diagnostics**, and **honest offline evaluation hooks**; modeling and trading remain out of scope.
