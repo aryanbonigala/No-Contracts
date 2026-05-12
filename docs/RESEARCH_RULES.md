@@ -90,4 +90,14 @@ These rules exist to keep the Kalshi **NO carry** study statistically honest and
 45. **Generic coverage tooling only:** CLI flags such as **`--market-status`**, **`--collect-status-set`**, and **`--orderbook-source-status`** exist to widen **honest offline dataset coverage** (status mixes, liquidity diagnostics). They must **not** be repurposed as thin wrappers around undisclosed edge logic.
 46. **Private alpha stays private:** strategy-specific modules, tuned parameters, and proprietary notebooks belong in **ignored local paths** or a **private repository**; wire them only through **explicit local imports** or documented extension points — never commit them here.
 
+## Public deployment and infrastructure (v0.14)
+
+47. **Public deployment configs must not contain secrets:** committed templates use **placeholders** only; real `DATABASE_URL`, API identifiers, and key paths live in **ignored** env files on the host.
+48. **Scheduled jobs must remain read-only:** default systemd templates invoke **ingest** and **stored-data report** CLIs only — **no** order placement, portfolio management, or execution paths.
+49. **Scheduled jobs must use generic coverage collection only:** committed units use **public** flags (for example status-set presets) — **not** proprietary market-selection or edge filters.
+50. **Private alpha modules must not be referenced in public systemd units:** wire private logic only through **local** wrappers or configs outside this repository.
+51. **Deployment docs must use placeholders** for credentials, hosts, and paths — never copy live infrastructure identifiers into git.
+52. **Generated reports, logs, and rendered `build/` outputs must not be committed** unless explicitly sanitized for sharing.
+53. **Deployment infrastructure must not reveal** alpha-sensitive strategy timing, filters, thresholds, or signal logic — keep tuning and selection in **private** research workflows.
+
 For engineering context, see `ARCHITECTURE.md`. For table-level details, see `DATA_SCHEMA.md`.

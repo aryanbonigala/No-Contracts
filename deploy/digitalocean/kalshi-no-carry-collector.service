@@ -1,0 +1,16 @@
+[Unit]
+Description=Kalshi NO Carry read-only research collector (markets + orderbooks)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__WORKING_DIRECTORY__
+EnvironmentFile=__ENVIRONMENT_FILE__
+# Read-only ingestion only; no order placement or live trading.
+ExecStart=__PYTHON_PATH__ scripts/run_research_pipeline.py \
+  --collect-markets \
+  --collect-status-set active_and_resolved \
+  --collect-orderbooks \
+  --limit 200

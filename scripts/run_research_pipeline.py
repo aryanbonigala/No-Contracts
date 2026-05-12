@@ -66,6 +66,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="open",
         help="Market listing status used to seed tickers for --collect-orderbooks (default: open)",
     )
+    p.add_argument(
+        "--collect-max-pages",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Max API pages per collector sub-call when --collect-markets / --collect-orderbooks (default: 1)",
+    )
     p.add_argument("--market-ticker", action="append", dest="market_tickers", default=None)
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--skip-splits", action="store_true")
@@ -138,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             market_statuses=tuple(ms_ordered),
             collect_status_set=args.collect_status_set,
             orderbook_source_status=str(args.orderbook_source_status).strip(),
+            collect_max_pages=int(args.collect_max_pages),
         )
     except ValueError as e:
         print(json.dumps({"success": False, "error": str(e)}), flush=True)

@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule kalshi-no-carry collector (operational default interval)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+Unit=kalshi-no-carry-collector.service
+
+[Install]
+WantedBy=timers.target

@@ -1,5 +1,8 @@
 # Secrets and local env
 .env
+*.env
+deploy/**/*.env
+!deploy/**/*.env.example
 .env.local
 .env.*.local
 *.pem

@@ -1,10 +1,39 @@
-# Architecture (v0.13 — coverage-oriented collection + pipeline + reporting + orderbook audit + splits + features + labels + audit + backtest + Alembic)
+# Architecture (v0.14 — DigitalOcean collector deployment layer + v0.13 coverage-oriented collection stack)
 
 ## Purpose
 
 This codebase supports **offline research** for a Kalshi thesis around **NO** contracts: identify potential mispricing after costs (fees, spread), ambiguity, and correlation — **without live trading**.
 
 **v0.5** adds **deterministic clustering and splits** on top of **v0.4** collectors. **v0.6** adds **`research_feature_rows`**. **v0.7** adds the **read-only backtest harness** (`backtest_runs` / `backtest_trades`). **v0.8** adds **`research_market_labels`** from **`raw_markets`** (`research/outcomes.py`), optional merge into feature rows via **`--label-version`**, and **`research/dataset_audit.py`** for coverage metrics. **v0.9** adds **`research/pipeline_runner.py`**: ordered orchestration (optional migrate/collectors, splits, labels, features with `label_version`, audit, optional backtest) with one safe JSON summary. **v0.10** adds **`research/reporting.py`**: Markdown + readiness **`compute_research_readiness`** from pipeline outputs (`scripts/run_research_report.py`). **v0.11** ensures **`collectors.common.normalize_collector_summary`** flattens each collector return value (dataclass, dict, or Pydantic) into a **JSON-serializable** stage payload with a consistent **`success`** bit before it is merged into **`run_research_pipeline`** output (fixes composite orderbook summaries that only exposed nested **`success`** fields). **v0.12** adds **`research/orderbook_audit.py`**: read-only inspection of **`raw_orderbook_snapshots`** (shape + implied executable NO/YES asks) to separate **empty books**, **unrecognized JSON**, and **feature-row extraction gaps**; **`run_no_carry_backtest_persisted`** completes reads and writes in **separate SQLAlchemy transactional scopes** to avoid nested **`begin()`** errors, and **replaces** any existing persisted row for the same **deterministic `run_id`** (UUIDv5 over canonical config) in **one transaction** when persisting so reruns stay idempotent. Labels support **scoring and audits**, not pricing-feature inputs.
+
+**v0.14** adds **DigitalOcean-focused deployment scaffolding** for a **read-only scheduled collector**: **`deploy/digitalocean/`** systemd **`.service`** / **`.timer`** templates, **`collector.env.example`**, **`scripts/deployment_smoke_check.py`** (DB connectivity + safe JSON), **`scripts/render_systemd_units.py`** (writes **`build/systemd/`**, gitignored), and **`docs/DEPLOYMENT_DIGITALOCEAN.md`**. Pipeline CLI adds **`--collect-max-pages`** so scheduled jobs can paginate Kalshi listings beyond a single page. **No** live trading, order placement, or strategy automation is introduced.
+
+```mermaid
+flowchart LR
+  subgraph deploy [v0.14 Droplet deployment]
+    VM[Linux VM / Droplet]
+    ST[Systemd timers]
+    COL[Collector oneshot service]
+    REP[Report oneshot service]
+    VM --> ST
+    ST --> COL
+    ST --> REP
+  end
+  subgraph clis [Public CLIs]
+    RP[run_research_pipeline.py]
+    RR[run_research_report.py]
+  end
+  DB[(PostgreSQL)]
+  COL --> RP
+  REP --> RR
+  RP --> DB
+  RR --> DB
+```
+
+- **Timers** trigger **generic** commands only (coverage-oriented collection; stored-data report **without** default **`--run-backtest`** in committed templates).
+- **Private** secrets load via systemd **`EnvironmentFile=`** (ignored paths on disk — not committed).
+- **Rendered** unit files under **`build/systemd/`** are **local outputs** — keep them out of git.
+- **Private** alpha modules, proprietary filters, or timing heuristics must **not** be wired into public unit templates; use local/private wrappers outside this repo if needed.
 
 **v0.13** adds **status-aware market listing** (`collect_markets_multi_status`): Kalshi allows one ``status`` filter per request, so the collector **loops** statuses and merges tickers with duplicate-skipping diagnostics for coverage-oriented datasets. **Orderbook collection** records per-book **liquidity / executable-quote** counters using **`orderbook_json_coverage_flags`**, supports **`orderbook_source_status`** (default **open**), and warns when sourcing books from non-open listings. **`research/collection_coverage.py`** aggregates **stored** market-status mixes, label-result histograms, snapshot executable ratios, and **data_readiness_notes** (embedded into **`audit_research_dataset`** and Markdown reports). **v0.12** orderbook price audit + **idempotent persisted backtests** remain below.
 
@@ -149,6 +178,9 @@ flowchart LR
 | `scripts/build_features.py` | CLI: build / persist `research_feature_rows` (test excluded by default) |
 | `scripts/audit_orderbook_prices.py` | CLI: read-only orderbook price audit JSON |
 | `scripts/run_backtest.py` | CLI: load feature rows, run baseline NO-carry rules, optional persist |
+| `scripts/deployment_smoke_check.py` | v0.14 DB smoke JSON (no secrets; optional `--check-tables` / `--create-tables`) |
+| `scripts/render_systemd_units.py` | v0.14 render `deploy/digitalocean/*.service|timer` → **`build/systemd/`** |
+| `deploy/digitalocean/` | v0.14 **systemd** templates + **`collector.env.example`** (placeholders only) |
 
 ## Ingestion design
 

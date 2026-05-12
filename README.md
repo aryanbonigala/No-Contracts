@@ -1,10 +1,10 @@
-# Kalshi NO Carry (v0.13 — coverage-oriented collection + collection readiness audits; read-only)
+# Kalshi NO Carry (v0.14 — DigitalOcean collector deployment + v0.13 coverage-oriented collection; read-only)
 
 Production-oriented **research** codebase for testing a statistical thesis on Kalshi binary markets:
 
 **Thesis (informal):** there may be edge in buying high-confidence **NO** contracts when the market-implied NO price is below the "true" NO probability after adjusting for fees, spread, ambiguity risk, and correlated event risk.
 
-This repository is **v0.13.0** (`Kalshi_NO_Carry_v0.13_CoverageOrientedCollectionAndLabelBackfill`). **v0.13** adds **status-aware market listing** (multiple Kalshi ``status`` values via separate API passes), **orderbook pull diagnostics** (executable-quote counts per captured book), **`research/collection_coverage.py`** embedded into **`audit_research_dataset`**, optional **`scripts/audit_collection_coverage.py`** for read-only JSON summaries, and **CLI presets** ``--collect-status-set active_and_resolved|all_basic`` for generic dataset breadth — **not** strategy selectors. **v0.12** orderbook audit / idempotent backtests remain below.
+This repository is **v0.14.0**. **v0.14** adds **DigitalOcean-oriented deployment** for a **scheduled read-only collector** (systemd templates under **`deploy/digitalocean/`**, **`scripts/deployment_smoke_check.py`**, **`scripts/render_systemd_units.py`**, **`docs/DEPLOYMENT_DIGITALOCEAN.md`**, and **`--collect-max-pages`** on the pipeline CLI). **v0.13** adds **status-aware market listing** (multiple Kalshi ``status`` values via separate API passes), **orderbook pull diagnostics** (executable-quote counts per captured book), **`research/collection_coverage.py`** embedded into **`audit_research_dataset`**, optional **`scripts/audit_collection_coverage.py`** for read-only JSON summaries, and **CLI presets** ``--collect-status-set active_and_resolved|all_basic`` for generic dataset breadth — **not** strategy selectors. **v0.12** orderbook audit / idempotent backtests remain below.
 
 ## Safety / scope
 
@@ -35,6 +35,17 @@ pip install -e ".[dev]"
 
 - **Kalshi:** `KALSHI_BASE_URL` (full `…/trade-api/v2`), optional auth env vars — see `.env.example`.
 - **Database:** **`DATABASE_URL` is required** for collector scripts, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`audit_collection_coverage.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, and **`run_backtest.py`** (Postgres recommended on a VM; `scripts/check_env.py` shows a **redacted** preview). **Offline unit tests** use SQLite in-memory and do not need `DATABASE_URL`.
+
+### DigitalOcean Read-Only Deployment (v0.14)
+
+Optional **Droplet** (or Linux VM) infrastructure for **scheduled, read-only** collection and reporting:
+
+- **Runbook:** [`docs/DEPLOYMENT_DIGITALOCEAN.md`](docs/DEPLOYMENT_DIGITALOCEAN.md) (placeholders only — no real secrets in git)
+- **Templates:** `deploy/digitalocean/` (systemd **`.service`** / **`.timer`**, **`collector.env.example`**)
+- **Smoke check:** `scripts/deployment_smoke_check.py` (safe JSON; no raw `DATABASE_URL`)
+- **Render helper:** `scripts/render_systemd_units.py` writes to **`build/systemd/`** (gitignored)
+
+Timers invoke **generic** coverage collection and a **non–`--run-backtest`** report by default. **No** live trading or order placement exists in this repository. Use **DigitalOcean Managed PostgreSQL** or **Postgres on the Droplet** with a private **`DATABASE_URL`** in an ignored env file (see **`deploy/digitalocean/collector.env.example`**).
 
 ### Database setup (two options)
 
@@ -279,9 +290,10 @@ Optional Postgres smoke: set `RUN_DB_INTEGRATION_TESTS=1` and `DATABASE_URL`.
 ## Documentation
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — ingestion + pipeline + **reporting** + splits + features + labels + audit + backtest harness
+- [`docs/DEPLOYMENT_DIGITALOCEAN.md`](docs/DEPLOYMENT_DIGITALOCEAN.md) — **v0.14** Droplet + Postgres + systemd collector/report (sanitized placeholders)
 - [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) — tables including `research_feature_rows`, `research_market_labels`, `backtest_runs`, `backtest_trades`
 - [`docs/RESEARCH_RULES.md`](docs/RESEARCH_RULES.md) — leakage + sealed test + feature + label + backtest rules
 
-## Deferred (not in v0.13)
+## Deferred (not in v0.14)
 
 **Probability models**, **strategy optimization**, **order placement**, **portfolio**, **live execution** — this repo focuses on **read-only ingestion**, **coverage diagnostics**, and **honest offline evaluation hooks**; modeling and trading remain out of scope.

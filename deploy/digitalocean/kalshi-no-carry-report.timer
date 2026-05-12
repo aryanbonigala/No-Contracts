@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule kalshi-no-carry report (operational default interval)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=60min
+Persistent=true
+Unit=kalshi-no-carry-report.service
+
+[Install]
+WantedBy=timers.target
