@@ -100,4 +100,13 @@ These rules exist to keep the Kalshi **NO carry** study statistically honest and
 52. **Generated reports, logs, and rendered `build/` outputs must not be committed** unless explicitly sanitized for sharing.
 53. **Deployment infrastructure must not reveal** alpha-sensitive strategy timing, filters, thresholds, or signal logic — keep tuning and selection in **private** research workflows.
 
+## Market lifecycle refresh (v0.15)
+
+54. **Lifecycle state only:** refresh candidate selection may use **generic** stored facts (for example: tickers with orderbook snapshots, missing or non-definitive labels, unsettled-looking statuses). It must **not** encode proprietary **edge**, **category profitability**, **threshold tuning**, or **strategy timing** heuristics in this public repository.
+55. **Ticker refresh scope:** public refresh jobs should target **previously observed markets** (stored tickers) or **explicit user-supplied tickers** — not undisclosed “alpha baskets.”
+56. **No outcome inference:** lifecycle refresh **updates `raw_markets`** only; labels still come from **`research/outcomes.py`** rules — **never** infer outcomes from **titles** or **current price**.
+57. **Extension points:** private repos may plug in additional selection or filtering **locally**; keep such logic out of committed public modules, docs, and systemd templates.
+58. **Read-only network:** lifecycle refresh uses **`GET /markets`** (including optional batched **`tickers`** query) and **`GET /markets/{ticker}`** fallback only — **no** orders, **no** portfolio mutations.
+59. **Batch refresh is not selection:** batched **`/markets?tickers=`** calls reduce round-trips only; they must **not** be used in public code to encode **ranking**, **profit filters**, or proprietary **market baskets** — keep selection logic generic (lifecycle/label state) or **private/off-repo**.
+
 For engineering context, see `ARCHITECTURE.md`. For table-level details, see `DATA_SCHEMA.md`.

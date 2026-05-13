@@ -1,14 +1,16 @@
-"""Read-only summaries of stored ingestion coverage (v0.13); no Kalshi HTTP."""
+"""Read-only summaries of stored ingestion coverage (v0.15); no Kalshi HTTP."""
 
 from __future__ import annotations
 
 from collections import Counter
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.orm import sessionmaker
 
+from kalshi_no_carry.collectors.market_lifecycle import count_lifecycle_refresh_candidates
 from kalshi_no_carry.db.schema import RawMarket, RawOrderbookSnapshot, ResearchFeatureRow, ResearchMarketLabel
+from kalshi_no_carry.research.outcomes import DEFAULT_LABEL_VERSION
 
 
 def feature_row_is_scorable(r: ResearchFeatureRow) -> bool:
@@ -42,8 +44,10 @@ def summarize_collection_coverage(
     if include_test:
         allowed_splits.add("test")
 
+    lv_eff = lv_opt or DEFAULT_LABEL_VERSION
+
     out: dict[str, Any] = {
-        "coverage_version": "v0.13_collection_coverage",
+        "coverage_version": "v0.15_collection_coverage",
         "split_version": sv,
         "feature_version": fv,
         "label_version": lv_opt,
@@ -56,6 +60,12 @@ def summarize_collection_coverage(
         "orderbook_snapshots_empty_executable": 0,
         "executable_no_ask_coverage_ratio": None,
         "executable_yes_ask_coverage_ratio": None,
+        "markets_with_orderbook_snapshots": 0,
+        "markets_with_orderbook_and_label": 0,
+        "markets_with_orderbook_and_resolved_label": 0,
+        "markets_with_orderbook_and_unknown_label": 0,
+        "lifecycle_refresh_candidate_count": 0,
+        "scorable_overlap_ratio": None,
         "research_feature_rows_in_scope": 0,
         "scorable_feature_rows_in_scope": 0,
         "scorable_feature_row_ratio": None,
@@ -152,6 +162,71 @@ def summarize_collection_coverage(
         if total_ob > 0:
             out["executable_no_ask_coverage_ratio"] = round(ex_no / total_ob, 6)
             out["executable_yes_ask_coverage_ratio"] = round(ex_yes / total_ob, 6)
+
+        # --- lifecycle / label alignment on stored orderbook tickers (data readiness; not trading advice)
+        ob_markets = int(
+            session.scalar(select(func.count(func.distinct(RawOrderbookSnapshot.market_ticker)))) or 0
+        )
+        out["markets_with_orderbook_snapshots"] = ob_markets
+
+        resolved_yes_no = and_(
+            ResearchMarketLabel.label_is_resolved.is_(True),
+            ResearchMarketLabel.label_market_result.in_(("yes", "no")),
+            ResearchMarketLabel.label_is_void.is_(False),
+        )
+        lbl_join = and_(
+            ResearchMarketLabel.market_ticker == RawOrderbookSnapshot.market_ticker,
+            ResearchMarketLabel.label_version == lv_eff,
+        )
+        with_label = int(
+            session.scalar(
+                select(func.count(func.distinct(RawOrderbookSnapshot.market_ticker)))
+                .select_from(RawOrderbookSnapshot)
+                .join(ResearchMarketLabel, lbl_join)
+            )
+            or 0
+        )
+        out["markets_with_orderbook_and_label"] = with_label
+
+        resolved_n = int(
+            session.scalar(
+                select(func.count(func.distinct(RawOrderbookSnapshot.market_ticker)))
+                .select_from(RawOrderbookSnapshot)
+                .join(ResearchMarketLabel, lbl_join)
+                .where(resolved_yes_no)
+            )
+            or 0
+        )
+        out["markets_with_orderbook_and_resolved_label"] = resolved_n
+
+        definitive = or_(
+            and_(
+                ResearchMarketLabel.label_is_resolved.is_(True),
+                ResearchMarketLabel.label_market_result.in_(("yes", "no")),
+            ),
+            ResearchMarketLabel.label_is_void.is_(True),
+            func.lower(func.coalesce(ResearchMarketLabel.label_market_result, "")) == "void",
+        )
+        unknown_align = int(
+            session.scalar(
+                select(func.count(func.distinct(RawOrderbookSnapshot.market_ticker)))
+                .select_from(RawOrderbookSnapshot)
+                .outerjoin(ResearchMarketLabel, lbl_join)
+                .where(or_(ResearchMarketLabel.market_ticker.is_(None), not_(definitive)))
+            )
+            or 0
+        )
+        out["markets_with_orderbook_and_unknown_label"] = unknown_align
+
+        out["lifecycle_refresh_candidate_count"] = count_lifecycle_refresh_candidates(
+            engine,
+            label_version=lv_eff,
+            include_already_labeled=False,
+            require_orderbook_snapshot=True,
+        )
+
+        if ob_markets > 0:
+            out["scorable_overlap_ratio"] = round(resolved_n / ob_markets, 6)
 
         # --- feature rows in audit slice
         if sv and fv:

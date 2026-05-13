@@ -24,7 +24,7 @@ from kalshi_no_carry.research.outcomes import build_market_outcome_labels_from_r
 from kalshi_no_carry.research.backtest_no_carry import run_no_carry_backtest_persisted
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_DEFAULT_PIPELINE_VERSION = "v0.9_research_pipeline_runner"
+_DEFAULT_PIPELINE_VERSION = "v0.15_research_pipeline_runner"
 
 COLLECT_STATUS_SET_CHOICES = frozenset({"active_and_resolved", "all_basic"})
 
@@ -92,6 +92,15 @@ class ResearchPipelineConfig(BaseModel):
     """Generic coverage presets only (``active_and_resolved`` | ``all_basic``); not strategy selectors."""
     orderbook_source_status: str = Field(default="open", min_length=1)
 
+    refresh_lifecycle_markets: bool = False
+    """When true with no explicit ``refresh_tickers``, select tickers via generic lifecycle rules."""
+    refresh_tickers: tuple[str, ...] = Field(default_factory=tuple)
+    """Explicit market tickers to refresh (order preserved; deduped by refresh)."""
+    refresh_limit: int | None = Field(default=None)
+    refresh_batch_size: int = Field(default=100, ge=1, le=5000)
+    include_already_labeled_refresh: bool = False
+    """When discovering refresh candidates, include markets with definitive labels too."""
+
     @model_validator(mode="after")
     def _pipeline_constraints(self) -> ResearchPipelineConfig:
         if self.collect_status_set is not None and self.collect_status_set not in COLLECT_STATUS_SET_CHOICES:
@@ -100,6 +109,8 @@ class ResearchPipelineConfig(BaseModel):
             )
         if int(self.min_no_ask_cents) > int(self.max_no_ask_cents):
             raise ValueError("min_no_ask_cents must be <= max_no_ask_cents")
+        if self.refresh_limit is not None and int(self.refresh_limit) < 1:
+            raise ValueError("refresh_limit must be >= 1 when set")
         return self
 
 
@@ -396,6 +407,72 @@ def run_research_pipeline(
             backtest_summary=None,
         )
 
+    def _lifecycle_refresh_enabled() -> bool:
+        return bool(config.refresh_lifecycle_markets) or bool(config.refresh_tickers)
+
+    # 3b lifecycle refresh (raw_markets upsert; before splits/labels/features)
+    if _lifecycle_refresh_enabled():
+        if kalshi_client is None:
+            exc = ValueError("lifecycle_refresh requires kalshi_client (read-only market refetch stage)")
+            stages["lifecycle_refresh"] = _fail("lifecycle_refresh", exc)
+            failed_stage = "lifecycle_refresh"
+        else:
+            try:
+                from kalshi_no_carry.collectors.market_lifecycle import (
+                    find_lifecycle_refresh_candidates,
+                    refresh_markets_by_ticker,
+                )
+
+                if config.refresh_tickers:
+                    tickers_to_refresh = list(config.refresh_tickers)
+                else:
+                    tickers_to_refresh = find_lifecycle_refresh_candidates(
+                        engine,
+                        limit=config.refresh_limit,
+                        require_orderbook_snapshot=True,
+                        label_version=config.label_version,
+                        include_already_labeled=config.include_already_labeled_refresh,
+                    )
+                summ = refresh_markets_by_ticker(
+                    engine,
+                    kalshi_client,
+                    tickers_to_refresh,
+                    batch_size=int(config.refresh_batch_size),
+                    dry_run=bool(config.dry_run),
+                )
+                stages["lifecycle_refresh"] = {
+                    "stage_name": "lifecycle_refresh",
+                    "enabled": True,
+                    "success": True,
+                    "warnings": list(summ.get("warnings") or []),
+                    "refresh_summary": summ,
+                    "tickers_requested_count": len(tickers_to_refresh),
+                    "used_explicit_tickers": bool(config.refresh_tickers),
+                }
+                for e in summ.get("errors") or []:
+                    if isinstance(e, str) and e.strip():
+                        stages["lifecycle_refresh"]["warnings"].append(e.strip())
+                if summ.get("errors"):
+                    warnings.append(
+                        "LIFECYCLE_REFRESH_PARTIAL: some tickers failed refresh — see stages.lifecycle_refresh.refresh_summary.errors"
+                    )
+            except Exception as exc:
+                stages["lifecycle_refresh"] = _fail("lifecycle_refresh", exc)
+                failed_stage = "lifecycle_refresh"
+    else:
+        stages["lifecycle_refresh"] = _disabled("lifecycle_refresh")
+
+    if failed_stage:
+        return _finalize(
+            config=config,
+            success=False,
+            failed_stage=failed_stage,
+            stages=stages,
+            warnings=warnings,
+            audit_summary=None,
+            backtest_summary=None,
+        )
+
     # 4 splits
     if config.build_splits:
         try:
@@ -643,6 +720,12 @@ def _finalize(
                 "orderbook_snapshots_empty_executable",
                 "orderbook_snapshots_with_yes_bids",
                 "orderbook_snapshots_with_no_bids",
+                "markets_with_orderbook_snapshots",
+                "markets_with_orderbook_and_label",
+                "markets_with_orderbook_and_resolved_label",
+                "markets_with_orderbook_and_unknown_label",
+                "lifecycle_refresh_candidate_count",
+                "scorable_overlap_ratio",
             ):
                 if key in cc and cc[key] is not None:
                     high_level_counts[key] = cc[key]

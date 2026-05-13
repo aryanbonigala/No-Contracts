@@ -15,6 +15,7 @@ LABEL_VOID = "void"
 LABEL_UNKNOWN = "unknown"
 
 _DEFAULT_LABEL_VERSION = "v0.8_market_outcome_labels"
+DEFAULT_LABEL_VERSION = _DEFAULT_LABEL_VERSION
 
 # Status / result tokens implying no tradable outcome (conservative void family)
 _VOID_STATUS_TOKENS = frozenset(

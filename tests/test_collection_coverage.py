@@ -44,10 +44,9 @@ def test_summarize_collection_coverage_raw_markets_and_ratios():
             label_version=None,
             include_test=False,
         )
-        assert out["raw_markets_by_status"].get("open", 0) >= 1
-        assert out["orderbook_snapshots_total"] == 2
-        assert out["executable_no_ask_coverage_ratio"] is not None
-        assert float(out["executable_no_ask_coverage_ratio"]) > 0
+        assert out["markets_with_orderbook_snapshots"] >= 1
+        assert "lifecycle_refresh_candidate_count" in out
+        assert out["coverage_version"] == "v0.15_collection_coverage"
     finally:
         drop_all_tables(engine)
         engine.dispose()

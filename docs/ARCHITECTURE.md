@@ -1,4 +1,4 @@
-# Architecture (v0.14 — DigitalOcean collector deployment layer + v0.13 coverage-oriented collection stack)
+# Architecture (v0.15 — market lifecycle refresh + v0.14/v0.13 stack)
 
 ## Purpose
 
@@ -7,6 +7,8 @@ This codebase supports **offline research** for a Kalshi thesis around **NO** co
 **v0.5** adds **deterministic clustering and splits** on top of **v0.4** collectors. **v0.6** adds **`research_feature_rows`**. **v0.7** adds the **read-only backtest harness** (`backtest_runs` / `backtest_trades`). **v0.8** adds **`research_market_labels`** from **`raw_markets`** (`research/outcomes.py`), optional merge into feature rows via **`--label-version`**, and **`research/dataset_audit.py`** for coverage metrics. **v0.9** adds **`research/pipeline_runner.py`**: ordered orchestration (optional migrate/collectors, splits, labels, features with `label_version`, audit, optional backtest) with one safe JSON summary. **v0.10** adds **`research/reporting.py`**: Markdown + readiness **`compute_research_readiness`** from pipeline outputs (`scripts/run_research_report.py`). **v0.11** ensures **`collectors.common.normalize_collector_summary`** flattens each collector return value (dataclass, dict, or Pydantic) into a **JSON-serializable** stage payload with a consistent **`success`** bit before it is merged into **`run_research_pipeline`** output (fixes composite orderbook summaries that only exposed nested **`success`** fields). **v0.12** adds **`research/orderbook_audit.py`**: read-only inspection of **`raw_orderbook_snapshots`** (shape + implied executable NO/YES asks) to separate **empty books**, **unrecognized JSON**, and **feature-row extraction gaps**; **`run_no_carry_backtest_persisted`** completes reads and writes in **separate SQLAlchemy transactional scopes** to avoid nested **`begin()`** errors, and **replaces** any existing persisted row for the same **deterministic `run_id`** (UUIDv5 over canonical config) in **one transaction** when persisting so reruns stay idempotent. Labels support **scoring and audits**, not pricing-feature inputs.
 
 **v0.14** adds **DigitalOcean-focused deployment scaffolding** for a **read-only scheduled collector**: **`deploy/digitalocean/`** systemd **`.service`** / **`.timer`** templates, **`collector.env.example`**, **`scripts/deployment_smoke_check.py`** (DB connectivity + safe JSON), **`scripts/render_systemd_units.py`** (writes **`build/systemd/`**, gitignored), and **`docs/DEPLOYMENT_DIGITALOCEAN.md`**. Pipeline CLI adds **`--collect-max-pages`** so scheduled jobs can paginate Kalshi listings beyond a single page. **No** live trading, order placement, or strategy automation is introduced.
+
+**v0.15** adds **`collectors/market_lifecycle`**: lifecycle refresh **upserts `raw_markets`** for **previously observed** tickers (or explicit CLI tickers), preferring **batched** **`GET /markets?tickers=`** (comma-separated) when supported and **falling back** to **`GET /markets/{ticker}`** — generic HTTP efficiency only, **not** market scoring or selection. Selection uses **generic lifecycle/label-state** rules — **not** category, price, or strategy filters. The optional stage runs in **`run_research_pipeline`** **after** optional orderbook collection and **before** splits/labels/features so **open-period snapshots** can align with **later** API resolution fields on the **same ticker**. **`scripts/refresh_market_lifecycle.py`** exposes the same operation as a standalone JSON CLI. **`collection_coverage`** adds **orderbook↔label overlap** metrics (worded as **data readiness / lifecycle alignment**).
 
 ```mermaid
 flowchart LR
@@ -96,7 +98,7 @@ flowchart LR
 
 **v0.7 backtest flow:** **`research_feature_rows`** → **`research.backtest_no_carry`** (select hypothetical NO entries, score vs **`label_*`** only) → **`backtest_runs`** + **`backtest_trades`** → *future* execution / models **not implemented here**.
 
-**v0.9 pipeline (orchestration):** optional **`migrate` / `create_tables`** → optional **collectors** (explicit flags only) → **`build_event_clusters_from_raw_data` + `assign_chronological_splits`** → **`build_market_outcome_labels_from_raw_markets`** → **`build_research_feature_rows_pipeline`** (with **`label_version`**) → **`audit_research_dataset`** → optional **`run_no_carry_backtest_persisted`**. Implemented in **`research.pipeline_runner`**; entry CLI **`scripts/run_research_pipeline.py`**. Default invocation uses **stored DB data only** (no network). **v0.11:** **`normalize_collector_summary`** (see **`collectors/common.py`**) is applied to **`collect_orderbooks`** (and accepts the same shapes for future stages) so pipeline JSON never assumes a bespoke attribute layout on collector objects.
+**v0.9+ pipeline (orchestration):** optional **`migrate` / `create_tables`** → optional **collectors** → **v0.15 optional `lifecycle_refresh`** (**`GET /markets/{ticker}`** → upsert **`raw_markets`**) → **`build_event_clusters_from_raw_data` + `assign_chronological_splits`** → **`build_market_outcome_labels_from_raw_markets`** → **`build_research_feature_rows_pipeline`** (with **`label_version`**) → **`audit_research_dataset`** → optional **`run_no_carry_backtest_persisted`**. Implemented in **`research.pipeline_runner`**; entry CLI **`scripts/run_research_pipeline.py`**. Default invocation uses **stored DB data only** (no network). **v0.11:** **`normalize_collector_summary`** (see **`collectors/common.py`**) is applied to **`collect_orderbooks`** (and accepts the same shapes for future stages) so pipeline JSON never assumes a bespoke attribute layout on collector objects.
 
 ```mermaid
 flowchart TD
@@ -106,12 +108,15 @@ flowchart TD
   subgraph optional_net [optional explicit collectors]
     CM[collect_events / collect_markets]
     CO[collect_orderbooks_*]
+    LR[collectors.market_lifecycle refresh]
   end
   RAW[(raw_* tables)]
   RPR --> CM
   RPR --> CO
   CM --> RAW
   CO --> RAW
+  RPR --> LR
+  LR --> RAW
   RPR --> BC[research.build_splits]
   BC --> RAW
   RPR --> LB[research.outcomes labels]
@@ -155,7 +160,7 @@ flowchart LR
 | Path | Responsibility today |
 |------|----------------------|
 | `kalshi_no_carry.kalshi_client` | Read-only Trade API v2 (`get_events`, `iter_events`, markets, orderbooks, status) |
-| `kalshi_no_carry.collectors.*` | `collect_events`, `collect_markets`, `collect_orderbooks_*` |
+| `kalshi_no_carry.collectors.*` | `collect_events`, `collect_markets`, `collect_orderbooks_*`, **`market_lifecycle` (ticker refresh)** |
 | `kalshi_no_carry.database` | Engine + `create_all` / `drop_all` + `healthcheck` + URL redaction |
 | `alembic/` + `scripts/db_migrate.py` | Versioned DDL via **explicit** Alembic revisions (`alembic upgrade head`); baseline `0001` is frozen `op.create_table` DDL — not `create_all` in migrations |
 | `kalshi_no_carry.db.*` | ORM + idempotent upserts + snapshot insert + clustering/split **read helpers** |
@@ -166,13 +171,14 @@ flowchart LR
 | `kalshi_no_carry.research.feature_dataset` | `JoinedFeatureSource`, `build_feature_row_from_joined_record`, **`build_research_feature_rows_pipeline`**, validation |
 | `kalshi_no_carry.research.outcomes` | Deterministic `extract_market_outcome_label*`, label builder from `raw_markets` |
 | `kalshi_no_carry.research.dataset_audit` | `audit_research_dataset` coverage / join diagnostics |
-| `kalshi_no_carry.research.collection_coverage` | v0.13 **`summarize_collection_coverage`** stored-ingestion readiness metrics |
+| `kalshi_no_carry.research.collection_coverage` | **`summarize_collection_coverage`** stored-ingestion + **lifecycle alignment** metrics |
 | `kalshi_no_carry.research.backtest_config` | Versioned `BacktestConfig` (Pydantic) for read-only runs |
-| `kalshi_no_carry.research.pipeline_runner` | v0.9 **`ResearchPipelineConfig`**, **`run_research_pipeline`**, **`recommend_next_action`** |
+| `kalshi_no_carry.research.pipeline_runner` | **`ResearchPipelineConfig`**, **`run_research_pipeline`**, **`recommend_next_action`** (v0.15 default **`pipeline_version`**) |
 | `kalshi_no_carry.research.orderbook_audit` | v0.12 **`audit_orderbook_price_extraction`**: read-only orderbook JSON + executable price diagnostics |
 | `kalshi_no_carry.research.backtest_no_carry` | Candidate selection, `score_no_trade`, summaries; **`run_no_carry_backtest_persisted`** |
 | `scripts/build_splits.py` | CLI: materialize clusters + splits (requires `DATABASE_URL`) |
-| `scripts/run_research_pipeline.py` | CLI: full pipeline, JSON summary (test excluded by default) |
+| `scripts/run_research_pipeline.py` | CLI: full pipeline, JSON summary (test excluded by default); **lifecycle refresh flags** |
+| `scripts/refresh_market_lifecycle.py` | CLI: standalone **ticker** refresh JSON (**`DATABASE_URL`** required) |
 | `scripts/run_research_report.py` | CLI: pipeline + Markdown/JSON audit report + readiness; **`--dry-run`** = audit-only preview, no files / no DB writes |
 | `scripts/build_labels.py` | CLI: populate `research_market_labels` |
 | `scripts/build_features.py` | CLI: build / persist `research_feature_rows` (test excluded by default) |

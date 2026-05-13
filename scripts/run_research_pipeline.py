@@ -9,7 +9,7 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
 
-_DEFAULT_PIPELINE_VERSION = "v0.9_research_pipeline_runner"
+_DEFAULT_PIPELINE_VERSION = "v0.15_research_pipeline_runner"
 _DEFAULT_SPLIT_VERSION = "v0.5_chronological_60_20_20"
 _DEFAULT_FEATURE_VERSION = "v0.6_orderbook_snapshot_features"
 _DEFAULT_LABEL_VERSION = "v0.8_market_outcome_labels"
@@ -86,6 +86,31 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--overwrite-splits", action="store_true")
     p.add_argument("--max-no-ask-cents", type=int, default=95)
     p.add_argument("--min-no-ask-cents", type=int, default=1)
+    p.add_argument(
+        "--refresh-lifecycle-markets",
+        action="store_true",
+        help="Re-fetch raw_markets for generic lifecycle candidates before labels/features (requires credentials)",
+    )
+    p.add_argument(
+        "--refresh-ticker",
+        action="append",
+        dest="refresh_tickers",
+        default=None,
+        help="Explicit market ticker to refresh (repeatable; order preserved)",
+    )
+    p.add_argument(
+        "--refresh-limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Max candidate tickers when using --refresh-lifecycle-markets without explicit --refresh-ticker",
+    )
+    p.add_argument("--refresh-batch-size", type=int, default=100)
+    p.add_argument(
+        "--include-already-labeled-refresh",
+        action="store_true",
+        help="When selecting refresh candidates, include tickers that already have definitive labels",
+    )
     return p.parse_args(argv)
 
 
@@ -107,6 +132,10 @@ def main(argv: list[str] | None = None) -> int:
     tickers = None
     if args.market_tickers:
         tickers = tuple(sorted({str(t).strip() for t in args.market_tickers if str(t).strip()}))
+
+    refresh_tickers: tuple[str, ...] = ()
+    if args.refresh_tickers:
+        refresh_tickers = tuple(str(x).strip() for x in args.refresh_tickers if str(x).strip())
 
     ms_ordered: list[str] = []
     if args.market_statuses:
@@ -146,6 +175,11 @@ def main(argv: list[str] | None = None) -> int:
             collect_status_set=args.collect_status_set,
             orderbook_source_status=str(args.orderbook_source_status).strip(),
             collect_max_pages=int(args.collect_max_pages),
+            refresh_lifecycle_markets=bool(args.refresh_lifecycle_markets),
+            refresh_tickers=refresh_tickers,
+            refresh_limit=args.refresh_limit,
+            refresh_batch_size=int(args.refresh_batch_size),
+            include_already_labeled_refresh=bool(args.include_already_labeled_refresh),
         )
     except ValueError as e:
         print(json.dumps({"success": False, "error": str(e)}), flush=True)
@@ -153,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
 
     engine = create_engine_from_database_url(str(settings.database_url))
     client = None
-    if cfg.collect_markets or cfg.collect_orderbooks:
+    if cfg.collect_markets or cfg.collect_orderbooks or cfg.refresh_lifecycle_markets or bool(cfg.refresh_tickers):
         client = KalshiClient.from_settings(settings)
     try:
         summary = run_research_pipeline(engine, cfg, kalshi_client=client)

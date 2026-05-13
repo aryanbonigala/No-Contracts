@@ -31,3 +31,10 @@ def test_public_docs_do_not_reference_placeholder_private_alpha_module_name() ->
         text = p.read_text(encoding="utf-8").lower()
         for phrase in banned_phrases:
             assert phrase not in text
+
+
+def test_refresh_lifecycle_cli_has_no_forbidden_flag_strings() -> None:
+    text = (ROOT / "scripts" / "refresh_market_lifecycle.py").read_text(encoding="utf-8")
+    lowered = text.lower()
+    for tok in FORBIDDEN_PIPELINE_FLAGS:
+        assert tok not in lowered

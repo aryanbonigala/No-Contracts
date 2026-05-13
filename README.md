@@ -1,10 +1,10 @@
-# Kalshi NO Carry (v0.14 — DigitalOcean collector deployment + v0.13 coverage-oriented collection; read-only)
+# Kalshi NO Carry (v0.15 — generic market lifecycle refresh + label alignment; read-only)
 
 Production-oriented **research** codebase for testing a statistical thesis on Kalshi binary markets:
 
 **Thesis (informal):** there may be edge in buying high-confidence **NO** contracts when the market-implied NO price is below the "true" NO probability after adjusting for fees, spread, ambiguity risk, and correlated event risk.
 
-This repository is **v0.14.0**. **v0.14** adds **DigitalOcean-oriented deployment** for a **scheduled read-only collector** (systemd templates under **`deploy/digitalocean/`**, **`scripts/deployment_smoke_check.py`**, **`scripts/render_systemd_units.py`**, **`docs/DEPLOYMENT_DIGITALOCEAN.md`**, and **`--collect-max-pages`** on the pipeline CLI). **v0.13** adds **status-aware market listing** (multiple Kalshi ``status`` values via separate API passes), **orderbook pull diagnostics** (executable-quote counts per captured book), **`research/collection_coverage.py`** embedded into **`audit_research_dataset`**, optional **`scripts/audit_collection_coverage.py`** for read-only JSON summaries, and **CLI presets** ``--collect-status-set active_and_resolved|all_basic`` for generic dataset breadth — **not** strategy selectors. **v0.12** orderbook audit / idempotent backtests remain below.
+This repository is **v0.15.0**. **v0.15** adds **read-only market lifecycle refresh** (`collectors/market_lifecycle.py`, `scripts/refresh_market_lifecycle.py`, pipeline flags **`--refresh-lifecycle-markets`** / **`--refresh-ticker`**) so previously observed tickers can be **re-fetched** later via **`GET /markets/{ticker}`**, updating **`raw_markets`** before **`build_labels`** / **`build_features`**. This improves **data alignment** between **open-period orderbook snapshots** and **later settlement fields** on the **same market ticker** — without category filters, price-based selection, or strategy heuristics. **`collection_coverage`** / audit JSON now includes **lifecycle alignment** counts (orderbook↔label overlap ratios — **data readiness** wording only). **v0.14** DigitalOcean deployment scaffolding remains; **v0.13** multi-status collection remains below.
 
 ## Safety / scope
 
@@ -15,10 +15,10 @@ This repository is **v0.14.0**. **v0.14** adds **DigitalOcean-oriented deploymen
 
 ## Layout
 
-- `src/kalshi_no_carry/collectors/` — `events.py`, `markets.py`, `orderbooks.py`, `common.py`
+- `src/kalshi_no_carry/collectors/` — `events.py`, `markets.py`, `orderbooks.py`, **`market_lifecycle.py`**, `common.py`
 - `src/kalshi_no_carry/db/` — schema + repositories
 - `src/kalshi_no_carry/research/` — clustering, splits, **`features.py`**, **`feature_dataset.py`**, **`orderbook_audit.py`**, **`collection_coverage.py`**, **`outcomes.py`**, **`dataset_audit.py`**, **`pipeline_runner.py`**, **`reporting.py`**, **`backtest_config.py`**, **`backtest_no_carry.py`**, `build_splits.py`
-- `scripts/` — collectors, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`audit_orderbook_prices.py`**, **`audit_collection_coverage.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, **`run_backtest.py`**, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
+- `scripts/` — collectors, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`audit_orderbook_prices.py`**, **`audit_collection_coverage.py`**, **`refresh_market_lifecycle.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, **`run_backtest.py`**, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
 - `alembic/` — versioned DDL (see **Database setup** below)
 - `tests/` — fakes + SQLite in-memory (**no live Kalshi or Postgres required** for default pytest)
 
@@ -109,6 +109,40 @@ End-to-end smoke (exchange status optional, one page events/markets, first N mar
 ```bash
 python scripts/collect_snapshot.py --create-tables --limit 20 --orderbook-count 10
 ```
+
+### Market lifecycle refresh (v0.15; requires `DATABASE_URL` + network for non–`--dry-run`)
+
+**Why:** scorable research rows need the **same** `market_ticker` to have (1) a stored **orderbook snapshot** from when the contract was active and (2) a **later** `raw_markets` payload whose API fields support **deterministic labels** after resolution. Listing collectors alone may not revisit every ticker; **ticker refresh** upserts current market JSON for tickers you already stored.
+
+**Scope:** **Read-only** market GETs only: lifecycle refresh prefers **batched** `GET /markets?tickers=...` (comma-separated list) when the client supports it, and **falls back** to **per-ticker** `GET /markets/{ticker}` if batching is unavailable or errors — generic transport efficiency, **not** strategy selection. Selection uses **generic** rules (e.g. tickers with snapshots and **non-definitive** stored labels by default) — **not** profitability, category edge, or threshold-based filters. Private strategy modules may extend selection **locally**; this repo stays infrastructure-only.
+
+**`--dry-run`:** skips **DB writes** (no `raw_markets` upserts, no `api_fetch_log` rows) but **may still call Kalshi** to see which tickers resolve in batch or per-ticker responses.
+
+Each HTTP batch uses at most **200** tickers per `GET /markets` request (Kalshi limit); larger **`--refresh-batch-size`** / pipeline values are applied in multiple requests.
+
+```bash
+python scripts/refresh_market_lifecycle.py --limit 500
+python scripts/refresh_market_lifecycle.py --ticker SOME-TICKER --ticker ANOTHER-TICKER
+python scripts/refresh_market_lifecycle.py --limit 500 --dry-run
+```
+
+**Pipeline (runs refresh before labels/features when flags are set):**
+
+```bash
+python scripts/run_research_pipeline.py \
+  --refresh-lifecycle-markets \
+  --refresh-limit 500 \
+  --delete-existing-labels \
+  --delete-existing-features
+
+python scripts/run_research_pipeline.py \
+  --refresh-ticker SOME-TICKER \
+  --refresh-ticker ANOTHER-TICKER \
+  --delete-existing-labels \
+  --delete-existing-features
+```
+
+Use **`scripts/audit_collection_coverage.py --show-breakdown`** for JSON on **orderbook↔label lifecycle alignment** (counts and ratios — **data readiness**, not trading advice).
 
 ## Build event clusters and splits (requires `DATABASE_URL`, no Kalshi)
 

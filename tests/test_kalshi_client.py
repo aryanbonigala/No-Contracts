@@ -34,6 +34,27 @@ def test_client_joins_base_url_and_path() -> None:
     assert calls == ["https://api.elections.kalshi.com/trade-api/v2/markets?limit=2"]
 
 
+def test_get_markets_by_tickers_query_param() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"markets": [{"ticker": "A-X"}, {"ticker": "B-Y"}], "cursor": ""})
+
+    transport = httpx.MockTransport(handler)
+    client = KalshiClient(
+        "https://api.elections.kalshi.com/trade-api/v2",
+        http_client=httpx.Client(transport=transport),
+    )
+    try:
+        out = client.get_markets_by_tickers(["A-X", "B-Y", "A-X"])
+    finally:
+        client.close()
+    assert len(out.get("markets") or []) == 2
+    assert "tickers=" in calls[0]
+    assert "A-X" in calls[0] and "B-Y" in calls[0]
+
+
 def test_iter_events_pagination() -> None:
     bodies = iter(
         [

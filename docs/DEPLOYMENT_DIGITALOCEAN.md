@@ -9,7 +9,7 @@ All **real** credentials, database URLs, hostnames, and file paths must stay in 
 Longitudinal research datasets benefit from:
 
 - Periodic **market** and **orderbook** snapshots while instruments are **open**
-- Later **refresh** after markets **resolve**, using the same read-only collectors
+- Later **refresh** after markets **resolve**, using the same read-only collectors (including **optional v0.15 ticker-level `raw_markets` refresh** via **`scripts/refresh_market_lifecycle.py`** or **`run_research_pipeline.py`** flags — **generic** selection only in public templates)
 - A host that runs on a **schedule** while a laptop is offline
 
 This deployment uses **systemd timers** to invoke the same **public** CLI entrypoints used locally: **`scripts/run_research_pipeline.py`** (optional network to Kalshi) and **`scripts/run_research_report.py`** (stored database only). **Nothing** in the default templates places orders or executes trades.
@@ -138,6 +138,19 @@ python scripts/run_research_pipeline.py \
   --collect-status-set active_and_resolved \
   --collect-orderbooks \
   --limit 200
+```
+
+### Optional manual lifecycle refresh (v0.15)
+
+After you have **stored orderbook snapshots**, you can **re-fetch the same tickers** so `raw_markets` picks up later **settlement / result** fields before rebuilding labels/features. This is **read-only `GET /markets/{ticker}`** traffic — **not** order placement.
+
+Prefer running this **manually** or via a **private** wrapper until you have reviewed cost/latency; the committed **systemd timers** stay on **generic** ingest/report commands only.
+
+```bash
+source .venv/bin/activate
+python scripts/refresh_market_lifecycle.py --limit 500
+# or integrate flags on the pipeline:
+python scripts/run_research_pipeline.py --refresh-lifecycle-markets --refresh-limit 500
 ```
 
 ## Manual Report Run

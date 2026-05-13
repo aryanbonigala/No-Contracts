@@ -12,6 +12,7 @@ import logging
 import time
 from decimal import Decimal
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Iterator
 from urllib.parse import quote, urljoin, urlparse
 
@@ -280,6 +281,36 @@ class KalshiClient:
             if not cursor:
                 break
             pages += 1
+
+    def get_markets_by_tickers(
+        self,
+        tickers: Sequence[str],
+        *,
+        limit: int | None = None,
+        authenticated: bool = False,
+    ) -> dict[str, Any]:
+        """
+        GET /markets with a comma-separated ``tickers`` query parameter (Kalshi Trade API v2).
+
+        Deduplicates tickers preserving first-seen order. At most **200** tickers per request
+        (``get_markets`` listing limit). Returns the raw JSON object (e.g. ``markets`` + ``cursor``).
+        """
+        seen: set[str] = set()
+        uniq: list[str] = []
+        for raw in tickers:
+            t = str(raw).strip()
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            uniq.append(t)
+        if not uniq:
+            return {"markets": [], "cursor": None}
+        if len(uniq) > 200:
+            raise ValueError("get_markets_by_tickers allows at most 200 tickers per request")
+        tickers_param = ",".join(uniq)
+        lim = int(limit) if limit is not None else len(uniq)
+        lim = max(1, min(lim, 200))
+        return self.get_markets(limit=lim, tickers=tickers_param, authenticated=authenticated)
 
     def get_market(self, ticker: str, *, authenticated: bool = False) -> dict[str, Any]:
         """GET /markets/{ticker}."""
