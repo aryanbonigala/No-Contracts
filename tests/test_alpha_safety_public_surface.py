@@ -11,6 +11,11 @@ FORBIDDEN_PIPELINE_FLAGS = (
     "alpha_score",
     "signal_weight",
     "profit_filter",
+    "category_edge",
+    "private_strategy",
+    "secret_strategy",
+    "kelly",
+    "sharpe_target",
 )
 
 
@@ -38,3 +43,27 @@ def test_refresh_lifecycle_cli_has_no_forbidden_flag_strings() -> None:
     lowered = text.lower()
     for tok in FORBIDDEN_PIPELINE_FLAGS:
         assert tok not in lowered
+
+
+def test_check_kalshi_connectivity_cli_has_no_forbidden_flag_strings() -> None:
+    text = (ROOT / "scripts" / "check_kalshi_connectivity.py").read_text(encoding="utf-8")
+    lowered = text.lower()
+    for tok in FORBIDDEN_PIPELINE_FLAGS:
+        assert tok not in lowered
+
+
+def test_connectivity_diagnostics_module_avoids_forbidden_tokens() -> None:
+    path = ROOT / "src" / "kalshi_no_carry" / "diagnostics" / "kalshi_connectivity.py"
+    text = path.read_text(encoding="utf-8").lower()
+    for tok in FORBIDDEN_PIPELINE_FLAGS:
+        assert tok not in text
+
+
+def test_public_markdown_avoids_forbidden_alpha_tokens() -> None:
+    paths = [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]
+    for doc_path in paths:
+        if not doc_path.is_file():
+            continue
+        lowered = doc_path.read_text(encoding="utf-8").lower()
+        for tok in FORBIDDEN_PIPELINE_FLAGS:
+            assert tok not in lowered, doc_path

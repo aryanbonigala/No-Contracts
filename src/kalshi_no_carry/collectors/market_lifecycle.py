@@ -390,8 +390,14 @@ def refresh_markets_by_ticker(
             )
             batch_ok = _per_ticker_loop(slice_, b)
         except Exception as exc:
+            extra = ""
+            if isinstance(exc, httpx.ConnectError):
+                extra = (
+                    " If this is a connectivity failure, run `python scripts/check_kalshi_connectivity.py` "
+                    "(read-only diagnostics)."
+                )
             summary["warnings"].append(
-                f"{BATCH_REFRESH_FALLBACK_WARN}: {type(exc).__name__}: {safe_error_message(exc)}"
+                f"{BATCH_REFRESH_FALLBACK_WARN}: {type(exc).__name__}: {safe_error_message(exc)}{extra}"
             )
             if used_batch_path and not dry_run:
                 _log_fetch(
