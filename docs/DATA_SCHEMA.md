@@ -1,48 +1,73 @@
-# Data schema (v0.3 — v0.8 labels + feature rows + backtest outputs)
+# Data schema
 
-This document matches the SQLAlchemy models in `kalshi_no_carry.db.schema`. You can create tables in two ways: **`create_all_tables()`** (see `scripts/init_db.py`) for a **fresh** disposable database, or **Alembic** (`scripts/db_migrate.py`, `alembic/versions/`) for **versioned, explicit** schema DDL on databases that hold research data. **Alembic revision files are frozen** — baseline `0001_initial_schema` uses explicit `op.create_table` operations (not `create_all` inside the migration) and matches the ORM’s **JSON / JSONB** convention (see below).
+Reference for SQLAlchemy models in `kalshi_no_carry.db.schema`. Tables align with collector and research flows from **v0.3** through **v0.8** (labels, feature rows, backtest outputs).
 
-**v0.4 collectors** populate `raw_events`, `raw_markets`, and `raw_orderbook_snapshots` using `KalshiClient` plus `db.repositories`, and append rows to **`api_fetch_log`**.
+**Bootstrap:** use **`create_all_tables()`** (see `scripts/init_db.py`) for a **fresh** disposable database. **Production / research DBs:** use **Alembic** (`scripts/db_migrate.py`, `alembic/versions/`) for **versioned, explicit** DDL. Alembic revision files are **frozen**; baseline `0001_initial_schema` uses explicit `op.create_table` (not `create_all` inside the migration) and matches the ORM’s **JSON / JSONB** convention (see [JSON columns](#json-columns)).
 
-**v0.5 split builder** (`research.build_splits`, `scripts/build_splits.py`) reads **`raw_events`** and **`raw_markets`**, upserts **`event_clusters`**, then writes **`strategy_splits`** rows for a required **`split_version`** string (default in the CLI: `v0.5_chronological_60_20_20`).
+**v0.4 collectors** populate `raw_events`, `raw_markets`, and `raw_orderbook_snapshots` via `KalshiClient` and `db.repositories`, and append rows to **`api_fetch_log`**.
+
+**v0.5 split builder** (`research.build_splits`, `scripts/build_splits.py`) reads **`raw_events`** and **`raw_markets`**, upserts **`event_clusters`**, then writes **`strategy_splits`** for a required **`split_version`** (CLI default: `v0.5_chronological_60_20_20`).
+
+
+## Table of Contents
+
+- [Design principles](#design-principles)
+- [JSON columns](#json-columns)
+- [Tables](#tables)
+  - [`api_fetch_log`](#api_fetch_log)
+  - [`raw_events`](#raw_events)
+  - [`raw_markets`](#raw_markets)
+  - [`raw_orderbook_snapshots`](#raw_orderbook_snapshots)
+  - [`event_clusters`](#event_clusters)
+  - [`strategy_splits`](#strategy_splits)
+  - [`research_feature_rows` (v0.6)](#research_feature_rows-v06)
+  - [`research_market_labels` (v0.8)](#research_market_labels-v08)
+  - [`backtest_runs` (v0.7)](#backtest_runs-v07)
+  - [`backtest_trades` (v0.7)](#backtest_trades-v07)
+- [Indexes](#indexes)
+- [Migrations](#migrations)
+
 
 ## Design principles
 
 - **Raw JSON provenance** (`raw_json`) stores the latest API payload (or a faithful copy) next to denormalized columns for indexing and quick filters.
 - **Timestamps** use `DateTime(timezone=True)` (PostgreSQL `timestamptz`; SQLite stores UTC without tz — ORM tests normalize).
-- **No secrets** in tables (credentials stay in env / vault).
+- **No secrets** in tables (credentials stay in env or a vault).
 - **Idempotent upserts** in `kalshi_no_carry.db.repositories` preserve `first_seen_at` and refresh `last_seen_at` + `raw_json` where applicable.
-- **`raw_orderbook_snapshots` are not split directly.** Split membership flows **market → event cluster → `strategy_splits`** once features/backtests join snapshots to markets. Until that join exists in code, treat orderbook rows as **unlabeled** at rest.
+- **`raw_orderbook_snapshots` are not split directly.** Split membership flows **market → event cluster → `strategy_splits`** once features and backtests join snapshots to markets. Until that join exists in code, treat orderbook rows as **unlabeled** at rest.
+
 
 ## JSON columns
 
-Portable `JSON` with PostgreSQL `JSONB` variant for efficient storage and indexing on Postgres:
+Portable `JSON` with PostgreSQL `JSONB` for efficient storage and indexing on Postgres:
 
-```text
+```python
 JSON().with_variant(JSONB(), "postgresql")
 ```
 
-The baseline Alembic revision **`0001_initial_schema`** (v0.5.4+) uses the same shape explicitly: `sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql")` via a small `json_type()` helper, so **`create_all` and `0001` agree on Postgres (`JSONB`) vs SQLite (`JSON`)**. **Normal tests do not require live Postgres** — behavior is covered by offline compilation checks.
+The baseline Alembic revision **`0001_initial_schema`** (v0.5.4+) mirrors this shape: `sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql")` via a small `json_type()` helper, so **`create_all`** and **`0001`** agree on Postgres (`JSONB`) vs SQLite (`JSON`). **Normal tests do not require live Postgres** — behavior is covered by offline compilation checks.
 
-If you already have a PostgreSQL database where JSON columns were created as plain **`JSON`** (not **`JSONB`**) and you require exact type alignment, you may need a **manual or follow-up migration** (`ALTER TABLE ... ALTER COLUMN ... SET DATA TYPE ...` or rebuild); this repository does not ship an automatic conversion for that case.
+If you already have a PostgreSQL database where JSON columns were created as plain **`JSON`** (not **`JSONB`**) and you require exact type alignment, you may need a **manual or follow-up migration** (`ALTER TABLE ... ALTER COLUMN ... SET DATA TYPE ...` or rebuild). This repository does not ship an automatic conversion for that case.
+
 
 ## Tables
 
 ### `api_fetch_log`
 
-Audit trail for ingestion / HTTP fetches (used by collectors).
+Audit trail for ingestion and HTTP fetches (used by collectors).
 
 | Column | Notes |
 |--------|--------|
 | `id` | Integer PK, autoincrement (portable across SQLite tests and Postgres). |
 | `fetched_at` | When the fetch finished (UTC), indexed. |
 | `endpoint` | Logical path or label, e.g. `/markets`. |
-| `params_json` | Query/body params as JSON (nullable). |
+| `params_json` | Query or body params as JSON (nullable). |
 | `status_code` | HTTP status when applicable. |
 | `success` | Boolean outcome. |
 | `error_message` | Error text (nullable). |
 | `row_count` | Optional count of rows parsed. |
 | `source` | Optional pipeline label. |
+
 
 ### `raw_events`
 
@@ -55,11 +80,12 @@ Kalshi **event** objects (ticker-level).
 | `raw_json` | Latest raw event document. |
 | `first_seen_at`, `last_seen_at`, `fetched_at` | Provenance timestamps. |
 
+
 ### `raw_markets`
 
 Kalshi **market** rows (`GET /markets` style objects).
 
-Denormalized price fields are **integer cents** parsed from Kalshi dollar strings when present (`yes_bid_dollars` → `yes_bid_cents`, etc.). `volume` / `open_interest` approximate fixed-point counts as integers.
+Denormalized price fields are **integer cents** parsed from Kalshi dollar strings when present (`yes_bid_dollars` → `yes_bid_cents`, etc.). `volume` and `open_interest` approximate fixed-point counts as integers.
 
 | Column | Notes |
 |--------|--------|
@@ -70,11 +96,12 @@ Denormalized price fields are **integer cents** parsed from Kalshi dollar string
 | `raw_json` | Full latest market JSON. |
 | `first_seen_at`, `last_seen_at`, `fetched_at` | Provenance. |
 
+
 ### `raw_orderbook_snapshots`
 
 Time series of **order book** snapshots for reconstructing **executable** prices.
 
-Kalshi returns YES and NO **bids** only. Denormalized columns store best bid/ask **cents** and **sizes** (integers) aligned with `derive_executable_prices_from_orderbook()` (asks synthesized as \(100 - \text{opposite bid}\) cents).
+Kalshi returns YES and NO **bids** only. Denormalized columns store best bid or ask **cents** and **sizes** (integers) aligned with `derive_executable_prices_from_orderbook()` (asks synthesized as \(100 - \text{opposite bid}\) cents).
 
 | Column | Notes |
 |--------|--------|
@@ -84,7 +111,8 @@ Kalshi returns YES and NO **bids** only. Denormalized columns store best bid/ask
 | `best_*_cents`, `best_*_size` | Best executable top-of-book view. |
 | `raw_json` | Full orderbook JSON from the API. |
 
-**Splits:** rows inherit **train / validation / test** only **indirectly** via their `market_ticker` → `raw_markets.event_ticker` → `event_clusters` → `strategy_splits` (future feature/backtest joins). Do not assign split labels per orderbook row in storage.
+**Splits:** rows inherit **train / validation / test** only **indirectly** via `market_ticker` → `raw_markets.event_ticker` → `event_clusters` → `strategy_splits` (future feature and backtest joins). Do not assign split labels per orderbook row in storage.
+
 
 ### `event_clusters`
 
@@ -99,6 +127,7 @@ Groups related **raw events** and **raw markets** so **all markets under the sam
 | `close_time` | Reference instant for **chronological ordering** of clusters (earliest per-row reference time across members; see clustering code). |
 | `raw_json` | Provenance: source tickers, cluster key copy, etc. |
 | `created_at`, `updated_at` | Maintained by repositories. |
+
 
 ### `strategy_splits`
 
@@ -122,6 +151,7 @@ Groups related **raw events** and **raw markets** so **all markets under the sam
 
 The **final test** bucket must remain **sealed** after honest reporting (see `RESEARCH_RULES.md`).
 
+
 ### `research_feature_rows` (v0.6)
 
 Materialized **feature dataset**: one row per **`raw_orderbook_snapshots`** row, joined to **`raw_markets`**, **`event_clusters`**, and **`strategy_splits`**, versioned by **`feature_version`** and **`split_version`**.
@@ -131,7 +161,7 @@ Materialized **feature dataset**: one row per **`raw_orderbook_snapshots`** row,
 | `snapshot_id`, `split_version`, `feature_version` | Composite PK. `snapshot_id` FK → `raw_orderbook_snapshots.id` (`ON DELETE CASCADE`). |
 | `split_name` | `train` / `validation` / `test` — **excluded from default feature exports** when sealed-test rules apply (see `scripts/build_features.py`). |
 | `fetched_at` | Snapshot time (UTC). |
-| Core fields | Market titles, series/category/status, close/expiration/settlement times, executable bid/ask/sizes, mids/spreads, time-to-close buckets, NO-carry scaffolding (`no_ask_cents`, fee estimates, required probabilities — **not** a live strategy). |
+| Core fields | Market titles, series or category or status, close or expiration or settlement times, executable bid or ask or sizes, mids or spreads, time-to-close buckets, NO-carry scaffolding (`no_ask_cents`, fee estimates, required probabilities — **not** a live strategy). |
 | `has_complete_executable_prices`, `missing_price_reason` | Data quality. |
 | `raw_orderbook_depth_summary` | Small JSON summary of book depth (not full book). |
 | `label_market_result` | Normalized **`yes` / `no` / `void` / `unknown`** when using **`--label-version`**; legacy build may mirror raw `result` string. **Scoring only.** |
@@ -141,19 +171,21 @@ Materialized **feature dataset**: one row per **`raw_orderbook_snapshots`** row,
 
 **Versioning:** change **`feature_version`** (e.g. `v0.6_orderbook_snapshot_features`) whenever feature definitions change; multiple versions may coexist for the same snapshot via the composite PK.
 
+
 ### `research_market_labels` (v0.8)
 
-Deterministic, **versioned** outcome snapshot per **`market_ticker`**, extracted from **`raw_markets`** JSON/columns (**`research/outcomes.py`**). Composite PK **`(market_ticker, label_version)`**; FK **`market_ticker`** → **`raw_markets`**.
+Deterministic, **versioned** outcome snapshot per **`market_ticker`**, extracted from **`raw_markets`** JSON or columns (**`research/outcomes.py`**). Composite PK **`(market_ticker, label_version)`**; FK **`market_ticker`** → **`raw_markets`**.
 
 | Column | Notes |
 |--------|--------|
 | `label_market_result` | `yes` / `no` / `void` / `unknown`. |
-| `label_no_won`, `label_yes_won` | Nullable booleans when unresolved/void. |
+| `label_no_won`, `label_yes_won` | Nullable booleans when unresolved or void. |
 | `label_is_resolved`, `label_is_void` | Flags for coverage metrics. |
 | `label_confidence` | `high` / `medium` / `low`. |
 | `label_source_field`, `label_source_value`, `label_reason` | Audit trail (no title-based inference). |
 | `extracted_at`, `created_at` | UTC timestamps. |
 | `raw_json` | Small provenance excerpt (nullable). |
+
 
 ### `backtest_runs` (v0.7)
 
@@ -162,13 +194,14 @@ One row per **completed** read-only backtest invocation (or **dry-run** omits th
 | Column | Notes |
 |--------|--------|
 | `run_id` | String PK (36-char UUID text). |
-| `backtest_version` | Logical harness / policy label, e.g. `v0.7_no_carry_baseline`. |
+| `backtest_version` | Logical harness or policy label, e.g. `v0.7_no_carry_baseline`. |
 | `strategy_name` | e.g. `no_carry_price_threshold_v0`. |
 | `split_version`, `feature_version` | Must match the feature rows consumed. |
 | `config_json` | Frozen parameters (JSON). |
 | `summary_json` | Aggregated metrics + warnings (JSON). |
 | `created_at` | UTC. |
 | `test_included` | True if **sealed test** rows were allowed for this run. |
+
 
 ### `backtest_trades` (v0.7)
 
@@ -179,21 +212,25 @@ Hypothetical **entries** and scores — **not** live orders. Composite PK **`(ru
 | `run_id` | FK → `backtest_runs.run_id` (`ON DELETE CASCADE`). |
 | `trade_index` | 0-based order in deterministic trade list. |
 | `snapshot_id`, `market_ticker`, `cluster_id`, `split_name` | Context from feature rows. |
-| `no_ask_cents`, `fee_cents` | Entry / fee (**scaled** by `stake_cents` policy in engine — see `score_no_trade`). |
+| `no_ask_cents`, `fee_cents` | Entry or fee (**scaled** by `stake_cents` policy in engine — see `score_no_trade`). |
 | `gross_pnl_cents`, `net_pnl_cents` | Nullable when `scored` is false. |
 | `scored` | Whether a usable **`label_*`** was available. |
 | `unscored_reason` | e.g. missing label. |
-| `raw_json` | Full trade/score dict for audit. |
+| `raw_json` | Full trade or score dict for audit. |
+
 
 ## Indexes
 
 - `raw_orderbook_snapshots`: `(market_ticker, fetched_at)` composite; individual indexes on `fetched_at` and `market_ticker` as defined in the model.
-- `research_feature_rows`: `(split_version, feature_version)`; `outcome_label_version`; ticker / cluster / `fetched_at` indexes per migrations **`0002`** + **`0004`**.
+- `research_feature_rows`: `(split_version, feature_version)`; `outcome_label_version`; ticker or cluster or `fetched_at` indexes per migrations **`0002`** + **`0004`**.
 - `research_market_labels`: `label_version` index per **`0004_market_outcome_labels`**.
 - `backtest_runs`: `created_at`, `(split_version, feature_version, backtest_version)` per **`0003_backtest_runs`**.
 - `backtest_trades`: `run_id` index per **`0003_backtest_runs`**.
 
-## Migrations (v0.5.2+; frozen baseline; v0.6 feature table)
+
+## Migrations
+
+Context: v0.5.2+ frozen baseline; v0.6 feature table and later revisions follow the same explicit DDL style.
 
 **Alembic** is the supported mechanism for **changing** the schema over time. Revisions live under `alembic/versions/`; `alembic/env.py` still exposes `Base.metadata` for **autogenerate** comparisons only. Run **`python scripts/db_migrate.py`** (requires `DATABASE_URL`) to apply `alembic upgrade head`.
 
@@ -211,4 +248,4 @@ Hypothetical **entries** and scores — **not** live orders. Composite PK **`(ru
 
 **`strategy_splits` (v0.5.1):** the primary key is **`(cluster_id, split_version)`** (composite). **`0001_initial_schema`** encodes that layout explicitly, including **`ON DELETE CASCADE`** on `cluster_id` → `event_clusters.cluster_id`.
 
-**Pre–v0.5.1 databases:** if `strategy_splits` was created with **`cluster_id` only** as the primary key, **neither** `create_all` **nor** replaying **`0001`** on an existing DB will safely reshape that table in place. **Recreate** the database (or write a **custom** follow-on migration with explicit `ALTER TABLE` / rebuild steps) before relying on Alembic history. There is no automated upgrade path from the old PK layout in this repository.
+**Pre–v0.5.1 databases:** if `strategy_splits` was created with **`cluster_id` only** as the primary key, **neither** `create_all` **nor** replaying **`0001`** on an existing DB will safely reshape that table in place. **Recreate** the database (or write a **custom** follow-on migration with explicit `ALTER TABLE` or rebuild steps) before relying on Alembic history. There is no automated upgrade path from the old PK layout in this repository.
