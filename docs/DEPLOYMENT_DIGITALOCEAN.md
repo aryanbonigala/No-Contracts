@@ -4,6 +4,7 @@ This runbook describes **optional** infrastructure for running **generic, read-o
 
 All **real** credentials, database URLs, hostnames, and file paths must stay in **private** configuration on the server — never in this public repository.
 
+
 ## Purpose
 
 Longitudinal research datasets benefit from:
@@ -13,6 +14,7 @@ Longitudinal research datasets benefit from:
 - A host that runs on a **schedule** while a laptop is offline
 
 This deployment uses **systemd timers** to invoke the same **public** CLI entrypoints used locally: **`scripts/run_research_pipeline.py`** (optional network to Kalshi) and **`scripts/run_research_report.py`** (stored database only). **Nothing** in the default templates places orders or executes trades.
+
 
 ## Architecture
 
@@ -196,7 +198,7 @@ sudo systemctl enable --now kalshi-no-carry-report.timer
 **Timers (operational defaults, not strategy timing):**
 
 | Unit | `OnBootSec` | `OnUnitActiveSec` | Purpose |
-|------|-------------|-------------------|---------|
+|:-----|:-------------|:------------------|:--------|
 | `kalshi-no-carry-collector.timer` | 5min | 15min | Periodic read-only ingest |
 | `kalshi-no-carry-report.timer` | 10min | 60min | Less frequent stored-data report |
 

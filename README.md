@@ -4,7 +4,10 @@ Production-oriented **research** codebase for testing a statistical thesis on Ka
 
 **Thesis (informal):** there may be edge in buying high-confidence **NO** contracts when the market-implied NO price is below the "true" NO probability after adjusting for fees, spread, ambiguity risk, and correlated event risk.
 
-This repository is **v0.15.0**. **v0.15** adds **read-only market lifecycle refresh** (`collectors/market_lifecycle.py`, `scripts/refresh_market_lifecycle.py`, pipeline flags **`--refresh-lifecycle-markets`** / **`--refresh-ticker`**) so previously observed tickers can be **re-fetched** later via **`GET /markets/{ticker}`**, updating **`raw_markets`** before **`build_labels`** / **`build_features`**. This improves **data alignment** between **open-period orderbook snapshots** and **later settlement fields** on the **same market ticker** — without category filters, price-based selection, or strategy heuristics. **`collection_coverage`** / audit JSON now includes **lifecycle alignment** counts (orderbook↔label overlap ratios — **data readiness** wording only). **v0.14** DigitalOcean deployment scaffolding remains; **v0.13** multi-status collection remains below.
+This repository is **v0.15.0**. **v0.15** adds **read-only market lifecycle refresh** (`collectors/market_lifecycle.py`, `scripts/refresh_market_lifecycle.py`, pipeline flags **`--refresh-lifecycle-markets`** / **`--refresh-ticker`**) so previously observed tickers can be **re-fetched** later via **`GET /markets/{ticker}`**, updating **`raw_markets`** before **`build_labels`** / **`build_features`**.
+
+This improves **data alignment** between **open-period orderbook snapshots** and **later settlement fields** on the **same market ticker** — without category filters, price-based selection, or strategy heuristics. **`collection_coverage`** / audit JSON now includes **lifecycle alignment** counts (orderbook↔label overlap ratios — **data readiness** wording only). **v0.14** DigitalOcean deployment scaffolding remains; **v0.13** multi-status collection remains below.
+
 
 ## Safety / scope
 
@@ -21,6 +24,8 @@ This repository is **v0.15.0**. **v0.15** adds **read-only market lifecycle refr
 - `scripts/` — collectors, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`audit_orderbook_prices.py`**, **`audit_collection_coverage.py`**, **`refresh_market_lifecycle.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, **`run_backtest.py`**, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
 - `alembic/` — versioned DDL (see **Database setup** below)
 - `tests/` — fakes + SQLite in-memory (**no live Kalshi or Postgres required** for default pytest)
+
+---
 
 ## Install
 
@@ -143,6 +148,8 @@ python scripts/run_research_pipeline.py \
 ```
 
 Use **`scripts/audit_collection_coverage.py --show-breakdown`** for JSON on **orderbook↔label lifecycle alignment** (counts and ratios — **data readiness**, not trading advice).
+
+---
 
 ## Build event clusters and splits (requires `DATABASE_URL`, no Kalshi)
 
@@ -320,6 +327,8 @@ pytest
 ```
 
 Optional Postgres smoke: set `RUN_DB_INTEGRATION_TESTS=1` and `DATABASE_URL`.
+
+---
 
 ## Documentation
 
