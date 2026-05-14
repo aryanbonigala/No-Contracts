@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -292,3 +293,149 @@ class BacktestTrade(Base):
     scored: Mapped[bool] = mapped_column(Boolean, nullable=False)
     unscored_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_json: Mapped[dict] = mapped_column(_JSON, nullable=False)
+
+
+class ShadowBucketScanRun(Base):
+    """One persisted shadow bucket scan execution (v0.17a)."""
+
+    __tablename__ = "shadow_bucket_scan_runs"
+    __table_args__ = (
+        Index("ix_shadow_bucket_scan_runs_shadow_version", "shadow_version"),
+        Index("ix_shadow_bucket_scan_runs_experiment_name", "experiment_name"),
+        Index("ix_shadow_bucket_scan_runs_version_started_at", "shadow_version", "started_at"),
+        Index("ix_shadow_bucket_scan_runs_status", "status"),
+    )
+
+    scan_run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    shadow_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    experiment_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    started_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    markets_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    orderbooks_attempted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    orderbooks_successful: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    orderbooks_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    entries_inserted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rejections_recorded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fill_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary_json: Mapped[dict | list | None] = mapped_column(_JSON, nullable=True)
+    error_json: Mapped[dict | list | None] = mapped_column(_JSON, nullable=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ShadowBucketEntry(Base):
+    """Simulated NO bucket fill held to resolution (paper only)."""
+
+    __tablename__ = "shadow_bucket_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "shadow_version",
+            "experiment_name",
+            "market_ticker",
+            "bucket_price_cents",
+            name="uq_shadow_bucket_entries_version_experiment_market_bucket",
+        ),
+        Index("ix_shadow_bucket_entries_shadow_version", "shadow_version"),
+        Index("ix_shadow_bucket_entries_experiment_name", "experiment_name"),
+        Index("ix_shadow_bucket_entries_scan_run_id", "scan_run_id"),
+        Index("ix_shadow_bucket_entries_bucket_price_cents", "bucket_price_cents"),
+        Index("ix_shadow_bucket_entries_bucket_name", "bucket_name"),
+        Index("ix_shadow_bucket_entries_market_ticker", "market_ticker"),
+        Index("ix_shadow_bucket_entries_observed_at", "observed_at"),
+        Index("ix_shadow_bucket_entries_version_bucket", "shadow_version", "bucket_price_cents"),
+        Index("ix_shadow_bucket_entries_version_market", "shadow_version", "market_ticker"),
+        Index("ix_shadow_bucket_entries_version_scored", "shadow_version", "scored"),
+        Index("ix_shadow_bucket_entries_bucket_scored", "bucket_price_cents", "scored"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    shadow_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    experiment_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    scan_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bucket_price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    bucket_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    market_ticker: Mapped[str] = mapped_column(String(512), nullable=False)
+    event_ticker: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    series_ticker: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    observed_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    close_time: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    seconds_to_close: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    yes_bid_best_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    no_bid_best_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    implied_no_ask_best_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    no_spread_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    contracts_requested: Mapped[int] = mapped_column(Integer, nullable=False)
+    contracts_filled: Mapped[int] = mapped_column(Integer, nullable=False)
+    simulated_avg_no_fill_cents: Mapped[float] = mapped_column(Float, nullable=False)
+    simulated_worst_no_fill_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    entry_tolerance_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    slippage_cents: Mapped[float | None] = mapped_column(Float, nullable=True)
+    visible_fillable_contracts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fill_quality: Mapped[str] = mapped_column(String(32), nullable=False)
+    gross_cost_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    fee_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    net_cost_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    settlement_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    settlement_result: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resolved_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    gross_pnl_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    net_pnl_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fee_drag_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    result_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unscored_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    raw_debug_json: Mapped[dict | list | None] = mapped_column(_JSON, nullable=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ShadowBucketMarketObservation(Base):
+    """Compact per-market shadow scan denominator (no full orderbook storage)."""
+
+    __tablename__ = "shadow_bucket_market_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "shadow_version",
+            "experiment_name",
+            "market_ticker",
+            name="uq_shadow_bucket_market_observations_version_experiment_market",
+        ),
+        Index("ix_shadow_bucket_market_obs_shadow_version", "shadow_version"),
+        Index("ix_shadow_bucket_market_obs_experiment_name", "experiment_name"),
+        Index("ix_shadow_bucket_market_obs_market_ticker", "market_ticker"),
+        Index(
+            "ix_shadow_bucket_market_obs_version_entered",
+            "shadow_version",
+            "ever_entered_any_bucket",
+        ),
+        Index("ix_shadow_bucket_market_obs_series", "series_ticker"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    shadow_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    experiment_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    market_ticker: Mapped[str] = mapped_column(String(512), nullable=False)
+    event_ticker: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    series_ticker: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    first_seen_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    times_scanned: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    orderbooks_attempted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    orderbooks_successful: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    orderbooks_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    min_observed_no_ask_cents: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_observed_no_bid_cents: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_observed_spread_cents: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ever_entered_any_bucket: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    entered_buckets_json: Mapped[dict | list | None] = mapped_column(_JSON, nullable=True)
+    closest_bucket_price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    closest_bucket_distance_cents: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_rejection_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    settlement_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    settlement_result: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)

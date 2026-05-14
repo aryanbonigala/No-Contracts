@@ -30,6 +30,9 @@ EXPECTED_TABLES = frozenset(
         "research_market_labels",
         "backtest_runs",
         "backtest_trades",
+        "shadow_bucket_scan_runs",
+        "shadow_bucket_entries",
+        "shadow_bucket_market_observations",
     }
 )
 

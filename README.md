@@ -34,6 +34,7 @@ This repository is **v0.16.0**. **v0.16** adds a **read-only connectivity diagno
 - [Coverage-oriented collection (v0.13)](#coverage-oriented-collection-v013)
 - [End-to-end research pipeline (v0.9)](#end-to-end-research-pipeline-v09)
 - [Research audit report (v0.10)](#research-audit-report-v010)
+- [NO Bucket Shadow Experiment (v0.17a)](#no-bucket-shadow-experiment-v017a)
 - [Run read-only backtest](#run-read-only-backtest)
 - [Tests](#tests)
 - [Documentation](#documentation)
@@ -53,8 +54,8 @@ This repository is **v0.16.0**. **v0.16** adds a **read-only connectivity diagno
 - `src/kalshi_no_carry/collectors/` — `events.py`, `markets.py`, `orderbooks.py`, **`market_lifecycle.py`**, `common.py`
 - `src/kalshi_no_carry/diagnostics/` — **`kalshi_connectivity.py`** (read-only live API connectivity JSON diagnostics)
 - `src/kalshi_no_carry/db/` — schema + repositories
-- `src/kalshi_no_carry/research/` — clustering, splits, **`features.py`**, **`feature_dataset.py`**, **`orderbook_audit.py`**, **`collection_coverage.py`**, **`outcomes.py`**, **`dataset_audit.py`**, **`pipeline_runner.py`**, **`reporting.py`**, **`backtest_config.py`**, **`backtest_no_carry.py`**, `build_splits.py`
-- `scripts/` — collectors, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`audit_orderbook_prices.py`**, **`audit_collection_coverage.py`**, **`check_kalshi_connectivity.py`**, **`refresh_market_lifecycle.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, **`run_backtest.py`**, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
+- `src/kalshi_no_carry/research/` — clustering, splits, **`features.py`**, **`feature_dataset.py`**, **`orderbook_audit.py`**, **`collection_coverage.py`**, **`outcomes.py`**, **`dataset_audit.py`**, **`pipeline_runner.py`**, **`reporting.py`**, **`backtest_config.py`**, **`backtest_no_carry.py`**, **`shadow_bucket_config.py`**, **`shadow_bucket_experiment.py`**, **`score_shadow_buckets.py`**, **`shadow_bucket_reporting.py`**, `build_splits.py`
+- `scripts/` — collectors, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`audit_orderbook_prices.py`**, **`audit_collection_coverage.py`**, **`check_kalshi_connectivity.py`**, **`refresh_market_lifecycle.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, **`run_backtest.py`**, **`run_shadow_bucket_scan.py`**, **`score_shadow_bucket_entries.py`**, **`run_shadow_bucket_report.py`**, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
 - `alembic/` — versioned DDL (see [Database setup](#database-setup))
 - `tests/` — fakes + SQLite in-memory (**no live Kalshi or Postgres required** for default pytest)
 
@@ -125,7 +126,7 @@ Requires **`DATABASE_URL`**. This runs **`alembic upgrade head`**. The Alembic e
 
 **`create_all` vs migrations:** `create_all_tables()` only creates missing tables from the **current** ORM metadata. It will **not** migrate an older physical schema. Use **`create_all`** only for **quick empty DB / test bootstraps**. For databases with data you care about, use **Alembic** (`scripts/db_migrate.py`).
 
-**Frozen revisions:** committed Alembic files under `alembic/versions/` are **version-controlled, explicit DDL**. Baseline **`0001`** … **`0004_market_outcome_labels`** (labels + feature-row label columns) are explicit migrations.
+**Frozen revisions:** committed Alembic files under `alembic/versions/` are **version-controlled, explicit DDL**. Baseline **`0001`** … **`0005_shadow_bucket_experiment`** (NO bucket shadow tables) are explicit migrations.
 
 **New revisions:** after editing ORM models, generate a migration (review the file before committing):
 
@@ -379,6 +380,37 @@ python scripts/run_research_report.py --include-test --run-backtest
 - **`--dry-run`:** **read-only preview** — does **not** write `summary.json` / `report.md`, does **not** run migrations or `create_all`, and does **not** mutate research tables (no splits, labels, features, or persisted backtest rows). It runs **`audit_research_dataset`** only (unless **`--skip-audit`**) against the current DB and prints readiness + Markdown-like content to stdout. **Write-oriented flags** (`--migrate`, `--create-tables`, `--overwrite-splits`, `--delete-existing-labels`, `--delete-existing-features`, pipeline stages that would materialize or persist backtests) are **ignored** with warnings; stdout JSON lists them under **`ignored_write_flags`**.
 - **Git / sharing:** do **not** commit reports if they embed sensitive local paths, operational notes, or anything that could expose credentials. Treat reports as **local artifacts** unless redacted.
 - **Readiness:** the `readiness` object in **`summary.json`** (from **`compute_research_readiness`**) uses **fixed conservative thresholds** (see `research/reporting.py`); it does **not** prove edge. **Live trading** is never recommended.
+
+
+## NO Bucket Shadow Experiment (v0.17a)
+
+**What it does:** scans **active/open** Kalshi markets (`open` + `active` listing passes), reads visible **orderbooks**, simulates immediate **buy-NO** fills from YES bids (reciprocal quoting), and persists **compact** hypothetical positions per fixed price bucket (**60¢, 70¢, 80¢, 85¢, 90¢, 95¢**). After settlement, **`score_shadow_bucket_entries`** scores rows using **`research_market_labels`** (optional **`--label-version`**) and **`raw_markets`** fields — **no probability model**, blind empirical regime.
+
+**What it does *not* do:** it **does not place orders**, **does not trade real money**, **does not call portfolio or order endpoints**, and **does not prove production readiness**.
+
+**Main metric:** **net PnL after fees** (stored per row and aggregated in reports).
+
+**Diagnostic metrics:** gross PnL, fees, fee drag, win rate, fee-adjusted break-even win rate, edge over break-even, max drawdown, loss streaks, and **result category** breakdown (see `research/score_shadow_buckets.py`).
+
+> **Warning:** A **high win rate does not imply profitability**. High-priced NO buckets can lose materially after one or two losses and fees. **Net PnL after fees** and **fee-adjusted break-even win rate** are the key metrics.
+
+**Migrate first** (adds `shadow_bucket_*` tables):
+
+```bash
+python scripts/db_migrate.py
+```
+
+**Safe examples:**
+
+```bash
+python scripts/run_shadow_bucket_scan.py --bucket-prices-cents 60,70,80,85,90,95 --entry-tolerance-cents 1 --stake-cents-per-trade 10000 --dry-run
+
+python scripts/score_shadow_bucket_entries.py --shadow-version v0.17a_no_bucket_shadow_experiment
+
+python scripts/run_shadow_bucket_report.py --shadow-version v0.17a_no_bucket_shadow_experiment --report-name no-bucket-shadow-v0.17a
+```
+
+**Storage:** scanner persists **compact** `shadow_bucket_entries` + `shadow_bucket_market_observations` rows only (no full raw orderbook snapshots). `raw_debug_json` is **truncated** to the configured max character budget.
 
 
 ## Run read-only backtest

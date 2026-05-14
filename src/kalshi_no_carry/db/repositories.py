@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import Select, case, delete, func, select
+from sqlalchemy import Select, and_, case, delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from kalshi_no_carry.db.schema import (
@@ -19,10 +20,14 @@ from kalshi_no_carry.db.schema import (
     RawOrderbookSnapshot,
     ResearchFeatureRow,
     ResearchMarketLabel,
+    ShadowBucketEntry,
+    ShadowBucketMarketObservation,
+    ShadowBucketScanRun,
     StrategySplit,
 )
 from kalshi_no_carry.kalshi_client import derive_executable_prices_from_orderbook
 from kalshi_no_carry.research.feature_dataset import JoinedFeatureSource
+from kalshi_no_carry.research.shadow_bucket_config import BucketShadowConfig
 
 
 def _utcnow() -> datetime:
@@ -773,3 +778,238 @@ def _maybe_str(v: Any) -> str | None:
     if v is None or v == "":
         return None
     return str(v)
+
+
+def create_shadow_bucket_scan_run(
+    session: Session,
+    config: BucketShadowConfig,
+    scan_run_id: str,
+    started_at: datetime,
+) -> ShadowBucketScanRun:
+    rid = (scan_run_id or "").strip()
+    if not rid:
+        raise ValueError("scan_run_id must be non-empty")
+    now = started_at if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
+    initial_status = "dry_run" if config.dry_run else "running"
+    row = ShadowBucketScanRun(
+        scan_run_id=rid,
+        shadow_version=config.shadow_version,
+        experiment_name=config.experiment_name,
+        started_at=now,
+        finished_at=None,
+        status=initial_status,
+        markets_seen=0,
+        orderbooks_attempted=0,
+        orderbooks_successful=0,
+        orderbooks_failed=0,
+        entries_inserted=0,
+        rejections_recorded=0,
+        fill_failures=0,
+        summary_json=None,
+        error_json=None,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def finish_shadow_bucket_scan_run(
+    session: Session,
+    scan_run_id: str,
+    status: str,
+    *,
+    summary_json: Mapping[str, Any] | None = None,
+    error_json: Mapping[str, Any] | None = None,
+    counts: Mapping[str, Any] | None = None,
+) -> None:
+    rid = (scan_run_id or "").strip()
+    row = session.get(ShadowBucketScanRun, rid)
+    if row is None:
+        raise ValueError(f"unknown scan_run_id: {rid!r}")
+    finished = _utcnow()
+    row.status = status
+    row.finished_at = finished
+    row.updated_at = finished
+    if summary_json is not None:
+        row.summary_json = dict(summary_json)
+    if error_json is not None:
+        row.error_json = dict(error_json)
+    if counts:
+        for key in (
+            "markets_seen",
+            "orderbooks_attempted",
+            "orderbooks_successful",
+            "orderbooks_failed",
+            "entries_inserted",
+            "rejections_recorded",
+            "fill_failures",
+        ):
+            if key in counts:
+                setattr(row, key, int(counts[key]))
+    session.add(row)
+
+
+def get_or_create_shadow_bucket_market_observation(
+    session: Session,
+    shadow_version: str,
+    experiment_name: str,
+    market_ticker: str,
+    defaults: Mapping[str, Any] | None = None,
+) -> ShadowBucketMarketObservation:
+    mt = (market_ticker or "").strip()
+    if not mt:
+        raise ValueError("market_ticker must be non-empty")
+    sv = (shadow_version or "").strip()
+    en = (experiment_name or "").strip()
+    if not sv or not en:
+        raise ValueError("shadow_version and experiment_name are required")
+    d = dict(defaults or {})
+    stmt = select(ShadowBucketMarketObservation).where(
+        and_(
+            ShadowBucketMarketObservation.shadow_version == sv,
+            ShadowBucketMarketObservation.experiment_name == en,
+            ShadowBucketMarketObservation.market_ticker == mt,
+        )
+    )
+    existing = session.execute(stmt).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    now = _utcnow()
+    row = ShadowBucketMarketObservation(
+        shadow_version=sv,
+        experiment_name=en,
+        market_ticker=mt,
+        event_ticker=_maybe_str(d.get("event_ticker")),
+        series_ticker=_maybe_str(d.get("series_ticker")),
+        first_seen_at=None,
+        last_seen_at=None,
+        times_scanned=0,
+        orderbooks_attempted=0,
+        orderbooks_successful=0,
+        orderbooks_failed=0,
+        min_observed_no_ask_cents=None,
+        max_observed_no_bid_cents=None,
+        min_observed_spread_cents=None,
+        ever_entered_any_bucket=False,
+        entered_buckets_json=None,
+        closest_bucket_price_cents=None,
+        closest_bucket_distance_cents=None,
+        last_rejection_reason=None,
+        settlement_status=None,
+        settlement_result=None,
+        scored=False,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def update_shadow_bucket_market_observation(
+    session: Session,
+    observation: ShadowBucketMarketObservation,
+    update_fields: Mapping[str, Any],
+) -> None:
+    for k, v in dict(update_fields).items():
+        setattr(observation, k, v)
+    observation.updated_at = _utcnow()
+    session.add(observation)
+
+
+def has_shadow_bucket_entry(
+    session: Session,
+    shadow_version: str,
+    experiment_name: str,
+    market_ticker: str,
+    bucket_price_cents: int,
+) -> bool:
+    stmt = select(func.count()).select_from(ShadowBucketEntry).where(
+        ShadowBucketEntry.shadow_version == (shadow_version or "").strip(),
+        ShadowBucketEntry.experiment_name == (experiment_name or "").strip(),
+        ShadowBucketEntry.market_ticker == (market_ticker or "").strip(),
+        ShadowBucketEntry.bucket_price_cents == int(bucket_price_cents),
+    )
+    n = session.scalar(stmt)
+    return int(n or 0) > 0
+
+
+def insert_shadow_bucket_entry(
+    session: Session,
+    entry_data: Mapping[str, Any],
+) -> ShadowBucketEntry | None:
+    d = dict(entry_data)
+    row = ShadowBucketEntry(**d)
+    try:
+        with session.begin_nested():
+            session.add(row)
+            session.flush()
+        return row
+    except IntegrityError:
+        return None
+
+
+def fetch_unscored_shadow_bucket_entries(
+    session: Session,
+    shadow_version: str,
+    *,
+    limit: int | None = None,
+) -> list[ShadowBucketEntry]:
+    sv = (shadow_version or "").strip()
+    stmt = (
+        select(ShadowBucketEntry)
+        .where(
+            ShadowBucketEntry.shadow_version == sv,
+            ShadowBucketEntry.scored.is_(False),
+        )
+        .order_by(ShadowBucketEntry.id.asc())
+    )
+    if limit is not None:
+        stmt = stmt.limit(int(limit))
+    return list(session.scalars(stmt).all())
+
+
+def summarize_shadow_bucket_entries(session: Session, shadow_version: str) -> dict[str, Any]:
+    sv = (shadow_version or "").strip()
+    rows = list(
+        session.scalars(
+            select(ShadowBucketEntry).where(ShadowBucketEntry.shadow_version == sv)
+        ).all()
+    )
+    by_bucket: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        key = str(r.bucket_price_cents)
+        if key not in by_bucket:
+            by_bucket[key] = {
+                "entries": 0,
+                "scored": 0,
+                "unscored": 0,
+                "wins": 0,
+                "losses": 0,
+                "gross_pnl_cents": 0,
+                "fees_cents": 0,
+                "net_pnl_cents": 0,
+            }
+        b = by_bucket[key]
+        b["entries"] += 1
+        if r.scored:
+            b["scored"] += 1
+            gp = int(r.gross_pnl_cents or 0)
+            fc = int(r.fee_cents or 0)
+            npn = int(r.net_pnl_cents or 0)
+            b["gross_pnl_cents"] += gp
+            b["fees_cents"] += fc
+            b["net_pnl_cents"] += npn
+            if npn > 0:
+                b["wins"] += 1
+            elif npn < 0:
+                b["losses"] += 1
+        else:
+            b["unscored"] += 1
+    return {
+        "shadow_version": sv,
+        "total_entries": len(rows),
+        "by_bucket": by_bucket,
+    }

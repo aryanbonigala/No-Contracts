@@ -87,7 +87,7 @@ def test_alembic_heads_runs_without_database_url() -> None:
     )
     assert proc.returncode == 0, proc.stderr
     out = proc.stdout
-    assert "0004_market_outcome_labels" in out
+    assert "0005_shadow_bucket_experiment" in out
     assert (ROOT / "alembic" / "versions" / "0001_initial_schema.py").is_file()
 
 
