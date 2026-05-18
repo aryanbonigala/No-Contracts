@@ -13,6 +13,10 @@ def test_shadow_bucket_tables_in_metadata() -> None:
     assert "shadow_bucket_scan_runs" in names
     assert "shadow_bucket_entries" in names
     assert "shadow_bucket_market_observations" in names
+    assert "shadow_bucket_execution_probes" in names
+
+
+
 
 
 def test_create_all_sqlite_has_shadow_tables() -> None:
@@ -50,6 +54,9 @@ def test_unique_constraint_market_bucket() -> None:
             "observed_at": now,
             "contracts_requested": 10,
             "contracts_filled": 10,
+            "contracts_unfilled": 0,
+            "eligible_depth_contracts": 500,
+            "best_no_fill_cents": 85,
             "simulated_avg_no_fill_cents": 85.0,
             "target_price_cents": 85,
             "entry_tolerance_cents": 1,

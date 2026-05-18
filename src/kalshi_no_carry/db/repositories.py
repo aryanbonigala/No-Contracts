@@ -21,6 +21,7 @@ from kalshi_no_carry.db.schema import (
     ResearchFeatureRow,
     ResearchMarketLabel,
     ShadowBucketEntry,
+    ShadowBucketExecutionProbe,
     ShadowBucketMarketObservation,
     ShadowBucketScanRun,
     StrategySplit,
@@ -936,6 +937,61 @@ def has_shadow_bucket_entry(
     return int(n or 0) > 0
 
 
+def upsert_shadow_execution_probe(session: Session, probe_data: Mapping[str, Any]) -> ShadowBucketExecutionProbe:
+    d = dict(probe_data)
+    rid = (d["scan_run_id"] or "").strip()
+    mt = (d["market_ticker"] or "").strip()
+    bp = int(d["bucket_price_cents"])
+    stmt = select(ShadowBucketExecutionProbe).where(
+        ShadowBucketExecutionProbe.scan_run_id == rid,
+        ShadowBucketExecutionProbe.market_ticker == mt,
+        ShadowBucketExecutionProbe.bucket_price_cents == bp,
+    )
+    existing = session.execute(stmt).scalar_one_or_none()
+    now = _utcnow()
+    if existing is None:
+        row = ShadowBucketExecutionProbe(**d)
+        if getattr(row, "created_at", None) is None:
+            row.created_at = now
+        row.updated_at = now
+        session.add(row)
+        session.flush()
+        return row
+    for k, v in d.items():
+        if hasattr(existing, k) and k not in {"id"}:
+            setattr(existing, k, v)
+    existing.updated_at = now
+    session.add(existing)
+    session.flush()
+    return existing
+
+
+def latest_successful_shadow_scan_run_id(
+    session: Session,
+    shadow_version: str,
+    *,
+    experiment_name: str | None = None,
+) -> str | None:
+    stmt = select(ShadowBucketScanRun.scan_run_id).where(
+        ShadowBucketScanRun.shadow_version == (shadow_version or "").strip(),
+        ShadowBucketScanRun.status == "success",
+    )
+    if experiment_name is not None:
+        stmt = stmt.where(ShadowBucketScanRun.experiment_name == str(experiment_name).strip())
+    stmt = stmt.order_by(ShadowBucketScanRun.started_at.desc()).limit(1)
+    return session.scalar(stmt)
+
+
+def list_shadow_execution_probes_for_scan(session: Session, scan_run_id: str) -> list[ShadowBucketExecutionProbe]:
+    rid = (scan_run_id or "").strip()
+    stmt = (
+        select(ShadowBucketExecutionProbe)
+        .where(ShadowBucketExecutionProbe.scan_run_id == rid)
+        .order_by(ShadowBucketExecutionProbe.market_ticker.asc(), ShadowBucketExecutionProbe.bucket_price_cents.asc())
+    )
+    return list(session.scalars(stmt).all())
+
+
 def insert_shadow_bucket_entry(
     session: Session,
     entry_data: Mapping[str, Any],
@@ -955,17 +1011,17 @@ def fetch_unscored_shadow_bucket_entries(
     session: Session,
     shadow_version: str,
     *,
+    experiment_name: str | None = None,
     limit: int | None = None,
 ) -> list[ShadowBucketEntry]:
     sv = (shadow_version or "").strip()
-    stmt = (
-        select(ShadowBucketEntry)
-        .where(
-            ShadowBucketEntry.shadow_version == sv,
-            ShadowBucketEntry.scored.is_(False),
-        )
-        .order_by(ShadowBucketEntry.id.asc())
+    stmt = select(ShadowBucketEntry).where(
+        ShadowBucketEntry.shadow_version == sv,
+        ShadowBucketEntry.scored.is_(False),
     )
+    if experiment_name is not None:
+        stmt = stmt.where(ShadowBucketEntry.experiment_name == (experiment_name or "").strip())
+    stmt = stmt.order_by(ShadowBucketEntry.id.asc())
     if limit is not None:
         stmt = stmt.limit(int(limit))
     return list(session.scalars(stmt).all())

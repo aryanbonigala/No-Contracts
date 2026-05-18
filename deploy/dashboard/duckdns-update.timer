@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic DuckDNS refresh for kalshi-no-carry dashboard host
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

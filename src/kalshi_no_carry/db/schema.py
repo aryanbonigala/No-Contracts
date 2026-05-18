@@ -375,6 +375,10 @@ class ShadowBucketEntry(Base):
     slippage_cents: Mapped[float | None] = mapped_column(Float, nullable=True)
     visible_fillable_contracts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fill_quality: Mapped[str] = mapped_column(String(32), nullable=False)
+    contracts_unfilled: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    eligible_depth_contracts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    best_no_fill_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    execution_notes_json: Mapped[dict | list | None] = mapped_column(_JSON, nullable=True)
     gross_cost_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     fee_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     net_cost_cents: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -388,6 +392,68 @@ class ShadowBucketEntry(Base):
     result_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     unscored_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     raw_debug_json: Mapped[dict | list | None] = mapped_column(_JSON, nullable=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ShadowBucketExecutionProbe(Base):
+    """One paper execution probe per scan run/market/bucket (includes failed fills).
+
+    Persisted alongside (or independent of) a ``shadow_bucket_entries`` insert so dashboards
+    can report execution-quality denominators beyond successful virtual entries alone.
+    """
+
+    __tablename__ = "shadow_bucket_execution_probes"
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_run_id",
+            "market_ticker",
+            "bucket_price_cents",
+            name="uq_shadow_bucket_probes_scan_market_bucket",
+        ),
+        Index("ix_shadow_bucket_probes_shadow_version", "shadow_version"),
+        Index("ix_shadow_bucket_probes_experiment_name", "experiment_name"),
+        Index("ix_shadow_bucket_probes_bucket", "bucket_price_cents"),
+        Index("ix_shadow_bucket_probes_scan_bucket", "scan_run_id", "bucket_price_cents"),
+        Index("ix_shadow_bucket_probes_market", "market_ticker"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scan_run_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("shadow_bucket_scan_runs.scan_run_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    shadow_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    experiment_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    market_ticker: Mapped[str] = mapped_column(String(512), nullable=False)
+    bucket_price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    close_time: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    seconds_to_close: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    event_ticker: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    series_ticker: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contracts_requested: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    contracts_filled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    contracts_unfilled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    eligible_depth_contracts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    avg_no_fill_cents: Mapped[float | None] = mapped_column(Float, nullable=True)
+    best_no_fill_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    worst_no_fill_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_price_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    entry_tolerance_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    slippage_cents: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fill_quality: Mapped[str] = mapped_column(String(32), nullable=False)
+    gross_cost_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fee_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skip_failure_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    linked_entry_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("shadow_bucket_entries.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
 

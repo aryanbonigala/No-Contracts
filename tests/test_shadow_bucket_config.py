@@ -61,3 +61,13 @@ def test_min_seconds_gt_max_invalid() -> None:
 def test_raw_debug_max_chars_too_large_invalid() -> None:
     with pytest.raises(ValueError):
         BucketShadowConfig(raw_debug_max_chars=10_001)
+
+
+def test_fee_series_multiplier_effective_multiplier() -> None:
+    cfg = BucketShadowConfig(
+        fee_taker_multiplier=2.0,
+        fee_series_multiplier_by_series_ticker=(("KXBTC", 1.5),),
+    )
+    assert cfg.effective_fee_multiplier_for_series(None) == 2.0
+    assert pytest.approx(cfg.effective_fee_multiplier_for_series("KXBTC")) == 3.0
+    assert cfg.effective_fee_multiplier_for_series("OTHER") == 2.0

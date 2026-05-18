@@ -15,6 +15,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Score unscored shadow_bucket_entries rows.")
     p.add_argument("--shadow-version", required=True)
     p.add_argument("--label-version", default=None)
+    p.add_argument("--experiment-name", default=None)
     p.add_argument("--limit", type=int, default=None)
     return p.parse_args(argv)
 
@@ -40,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
                 session,
                 args.shadow_version,
                 label_version=args.label_version,
+                experiment_name=args.experiment_name,
                 limit=args.limit,
             )
             session.commit()

@@ -30,6 +30,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--min-seconds-to-close", type=int, default=None)
     p.add_argument("--max-seconds-to-close", type=int, default=None)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--markets-page-limit", type=int, default=None)
+    p.add_argument("--markets-max-pages-per-status", type=int, default=None)
+    p.add_argument("--markets-sleep-seconds-between-pages", type=float, default=None)
+    p.add_argument("--markets-http-max-retries", type=int, default=None)
+    p.add_argument("--markets-retry-backoff-seconds", type=float, default=None)
+    p.add_argument("--fee-taker-multiplier", type=float, default=None)
+    p.add_argument("--no-persist-execution-probes", action="store_true")
     return p.parse_args(argv)
 
 
@@ -76,6 +83,23 @@ def main(argv: list[str] | None = None) -> int:
         max_seconds_to_close=args.max_seconds_to_close,
         dry_run=bool(args.dry_run),
     )
+    upd: dict[str, object] = {}
+    if args.markets_page_limit is not None:
+        upd["markets_page_limit"] = int(args.markets_page_limit)
+    if args.markets_max_pages_per_status is not None:
+        upd["markets_max_pages_per_status"] = int(args.markets_max_pages_per_status)
+    if args.markets_sleep_seconds_between_pages is not None:
+        upd["markets_sleep_seconds_between_pages"] = float(args.markets_sleep_seconds_between_pages)
+    if args.markets_http_max_retries is not None:
+        upd["markets_http_max_retries"] = int(args.markets_http_max_retries)
+    if args.markets_retry_backoff_seconds is not None:
+        upd["markets_retry_backoff_seconds"] = float(args.markets_retry_backoff_seconds)
+    if args.fee_taker_multiplier is not None:
+        upd["fee_taker_multiplier"] = float(args.fee_taker_multiplier)
+    if args.no_persist_execution_probes:
+        upd["persist_execution_probes"] = False
+    if upd:
+        cfg = cfg.model_copy(update=upd)
 
     engine = create_engine_from_database_url(str(settings.database_url))
     Session = sessionmaker(bind=engine, expire_on_commit=False, future=True)

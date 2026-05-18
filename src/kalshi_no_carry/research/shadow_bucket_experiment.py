@@ -1,4 +1,4 @@
-"""NO bucket shadow scan: simulate fills from live orderbooks, persist compact rows (v0.17a).
+"""NO bucket shadow scan: simulate fills from live orderbooks, persist compact rows (v0.17a→v0.18).
 
 Read-only: uses ``GET /markets`` and ``GET /markets/{ticker}/orderbook`` only — never orders or portfolio.
 """
@@ -6,7 +6,9 @@ Read-only: uses ``GET /markets`` and ``GET /markets/{ticker}/orderbook`` only �
 from __future__ import annotations
 
 import json
+import logging
 import math
+import time
 import uuid
 from collections import Counter
 from collections.abc import Iterator, Sequence
@@ -27,17 +29,23 @@ from kalshi_no_carry.db.repositories import (
     has_shadow_bucket_entry,
     insert_shadow_bucket_entry,
     update_shadow_bucket_market_observation,
+    upsert_shadow_execution_probe,
 )
 from kalshi_no_carry.kalshi_client import dollars_str_to_cents
 from kalshi_no_carry.research.shadow_bucket_config import BucketShadowConfig, validate_bucket_windows
 from kalshi_no_carry.utils.fees import estimate_taker_fee_cents
+
+logger = logging.getLogger(__name__)
 
 # --- Fill quality ---
 FULL_FILL = "FULL_FILL"
 PARTIAL_FILL = "PARTIAL_FILL"
 INSUFFICIENT_DEPTH = "INSUFFICIENT_DEPTH"
 EMPTY_BOOK = "EMPTY_BOOK"
-MALFORMED_BOOK = "MALFORMED_BOOK"
+INVALID_BOOK = "INVALID_BOOK"
+API_ERROR = "API_ERROR"
+SKIPPED = "SKIPPED"
+MALFORMED_BOOK = INVALID_BOOK
 
 # --- Rejections (scanner / observation) ---
 MARKET_MALFORMED = "MARKET_MALFORMED"
@@ -58,10 +66,13 @@ ACTIVE_MARKET_STATUSES: tuple[str, ...] = ("open", "active")
 class FillSimulation:
     contracts_requested: int
     contracts_filled: int
+    contracts_unfilled: int
     avg_no_fill_cents: float | None
+    best_no_fill_cents: int | None
     worst_no_fill_cents: int | None
     gross_cost_cents: int
     visible_fillable_contracts: int
+    eligible_depth_contracts: int
     fill_quality: str
     levels_used: tuple[dict[str, int], ...]
 
@@ -216,9 +227,17 @@ def simulate_buy_no_fill_from_yes_bids(
     contracts_requested: int,
     *,
     allow_partial_fills: bool = False,
+    max_acceptable_implied_no_cents: int | None = None,
 ) -> FillSimulation:
+    """
+    Walk YES bid depth (sell NO via reciprocal), optionally restricted to implied NO ask
+    at or below ``max_acceptable_implied_no_cents``. When that bound is ``None``, use 99¢
+    (legacy / unconstrained depth walk).
+    """
     if contracts_requested <= 0:
         raise ValueError("contracts_requested must be positive")
+
+    upper = 99 if max_acceptable_implied_no_cents is None else int(max_acceptable_implied_no_cents)
 
     visible = 0
     for yc, sz in yes_levels:
@@ -230,18 +249,28 @@ def simulate_buy_no_fill_from_yes_bids(
         return FillSimulation(
             contracts_requested=contracts_requested,
             contracts_filled=0,
+            contracts_unfilled=contracts_requested,
             avg_no_fill_cents=None,
+            best_no_fill_cents=None,
             worst_no_fill_cents=None,
             gross_cost_cents=0,
             visible_fillable_contracts=visible,
+            eligible_depth_contracts=0,
             fill_quality=EMPTY_BOOK,
             levels_used=(),
         )
+
+    eligible_depth = 0
+    for yc, sz in yes_levels:
+        impl = 100 - yc
+        if 1 <= impl <= 99 and impl <= upper:
+            eligible_depth += sz
 
     sorted_levels = sorted(yes_levels, key=lambda x: x[0], reverse=True)
     remaining = contracts_requested
     gross = 0
     worst_no: int | None = None
+    best_no: int | None = None
     used: list[dict[str, int]] = []
 
     for yes_cents, avail in sorted_levels:
@@ -250,11 +279,14 @@ def simulate_buy_no_fill_from_yes_bids(
         implied_no = 100 - yes_cents
         if not (1 <= implied_no <= 99):
             continue
+        if implied_no > upper:
+            continue
         take = min(avail, remaining)
         if take <= 0:
             continue
         gross += take * implied_no
         worst_no = implied_no if worst_no is None else max(worst_no, implied_no)
+        best_no = implied_no if best_no is None else min(best_no, implied_no)
         used.append(
             {
                 "yes_bid_cents": yes_cents,
@@ -266,7 +298,12 @@ def simulate_buy_no_fill_from_yes_bids(
         remaining -= take
 
     filled = contracts_requested - remaining
-    if filled == contracts_requested:
+    unfilled = contracts_requested - filled
+
+    if eligible_depth == 0 and visible > 0:
+        qual = INSUFFICIENT_DEPTH
+        avg = None
+    elif filled == contracts_requested:
         qual = FULL_FILL
         avg = gross / filled if filled else None
     elif filled > 0 and not allow_partial_fills:
@@ -282,13 +319,60 @@ def simulate_buy_no_fill_from_yes_bids(
     return FillSimulation(
         contracts_requested=contracts_requested,
         contracts_filled=filled,
+        contracts_unfilled=unfilled,
         avg_no_fill_cents=float(avg) if avg is not None else None,
+        best_no_fill_cents=best_no if used else None,
         worst_no_fill_cents=worst_no,
         gross_cost_cents=gross,
         visible_fillable_contracts=visible,
+        eligible_depth_contracts=eligible_depth,
         fill_quality=qual,
         levels_used=tuple(used),
     )
+
+
+def unwrap_orderbook_dict(orderbook_payload: Any) -> dict[str, Any] | None:
+    if orderbook_payload is None:
+        return None
+    if not isinstance(orderbook_payload, dict):
+        return None
+    inner = orderbook_payload.get("orderbook")
+    if isinstance(inner, dict):
+        return inner
+    obf = orderbook_payload.get("orderbook_fp")
+    if isinstance(obf, dict):
+        return obf
+    return orderbook_payload
+
+
+def classify_yes_orderbook(
+    orderbook_payload: Any,
+    yes_levels: list[tuple[int, int]],
+) -> tuple[str, str | None]:
+    """Return ``(status, detail)`` where status is ``\"OK\"``, ``EMPTY_BOOK``, or ``INVALID_BOOK``."""
+    if yes_levels:
+        return "OK", None
+    root = unwrap_orderbook_dict(orderbook_payload)
+    if root is None:
+        return INVALID_BOOK, "non_object_payload"
+    yes_raw = root.get("yes")
+    if yes_raw is None:
+        yes_raw = root.get("yes_dollars")
+    if isinstance(yes_raw, list) and len(yes_raw) > 0:
+        return INVALID_BOOK, "yes_side_unparsed"
+    return EMPTY_BOOK, None
+
+
+def estimate_shadow_taker_fee_cents(
+    contract_count: int,
+    avg_price_cents: float | int,
+    *,
+    fee_multiplier: float,
+) -> int:
+    if contract_count <= 0:
+        return 0
+    base = estimate_kalshi_taker_fee_cents(contract_count, avg_price_cents)
+    return max(0, int(round(base * float(fee_multiplier))))
 
 
 def bucket_for_fill(
@@ -361,6 +445,8 @@ def normalize_market_for_shadow(market: Any) -> dict[str, Any]:
     series_ticker: str | None = None
     status: str | None = None
     close_time: datetime | None = None
+    title: str | None = None
+    category: str | None = None
 
     if hasattr(market, "market_ticker"):
         market_ticker = str(getattr(market, "market_ticker") or "").strip()
@@ -376,6 +462,12 @@ def normalize_market_for_shadow(market: Any) -> dict[str, Any]:
         close_time = getattr(market, "close_time", None)
         if close_time is not None and not isinstance(close_time, datetime):
             close_time = _parse_iso_dt(close_time)
+        tt = getattr(market, "title", None)
+        if tt is not None:
+            title = str(tt).strip() or None
+        cg = getattr(market, "category", None)
+        if cg is not None:
+            category = str(cg).strip() or None
     elif isinstance(market, dict):
         market_ticker = str(market.get("ticker") or market.get("market_ticker") or "").strip()
         et = market.get("event_ticker")
@@ -385,6 +477,10 @@ def normalize_market_for_shadow(market: Any) -> dict[str, Any]:
         stat = market.get("status")
         status = str(stat).strip() if stat not in (None, "") else None
         close_time = _parse_iso_dt(market.get("close_time"))
+        tit = market.get("title") or market.get("yes_sub_title") or market.get("subtitle")
+        title = str(tit).strip() if tit not in (None, "") else None
+        cat = market.get("category")
+        category = str(cat).strip() if cat not in (None, "") else None
     else:
         malformed = True
 
@@ -397,6 +493,8 @@ def normalize_market_for_shadow(market: Any) -> dict[str, Any]:
         "series_ticker": series_ticker,
         "status": status,
         "close_time": close_time,
+        "title": title,
+        "category": category,
         "malformed": malformed,
     }
 
@@ -459,6 +557,39 @@ def _bound_debug_payload(payload: Any, max_chars: int) -> dict[str, Any] | None:
     return {"truncated": True, "prefix": s[:max_chars]}
 
 
+def _get_markets_page_with_retries(
+    client: Any,
+    config: BucketShadowConfig,
+    *,
+    status: str,
+    cursor: str | None,
+) -> dict[str, Any]:
+    getter = getattr(client, "get_markets", None)
+    if getter is None:
+        raise AttributeError("get_markets is required for retried pagination pages")
+    attempts = max(1, int(config.markets_http_max_retries))
+    last_exc: BaseException | None = None
+    for attempt in range(attempts):
+        try:
+            return getter(limit=int(config.markets_page_limit), cursor=cursor, status=status)
+        except Exception as exc:
+            last_exc = exc
+            if attempt + 1 >= attempts:
+                break
+            sleep_s = float(config.markets_retry_backoff_seconds) * (2**attempt)
+            logger.warning(
+                "markets page fetch failed (%s/%s) status=%s: %s; sleeping %.2fs",
+                attempt + 1,
+                attempts,
+                status,
+                safe_error_message(exc),
+                sleep_s,
+            )
+            time.sleep(sleep_s)
+    assert last_exc is not None
+    raise last_exc
+
+
 def _reload_shadow_observation(session: Session, shadow_version: str, experiment_name: str, market_ticker: str) -> ShadowBucketMarketObservation:
     stmt = select(ShadowBucketMarketObservation).where(
         and_(
@@ -496,6 +627,7 @@ def run_bucket_shadow_scan_persisted(
         "entries_inserted": 0,
         "entries_by_bucket": dict(entries_by_bucket),
         "fill_failures": 0,
+        "markets_listing_pages_fetched": 0,
         "top_rejection_reasons": {},
         "started_at": obs_at.isoformat(),
         "finished_at": None,
@@ -515,6 +647,7 @@ def run_bucket_shadow_scan_persisted(
     }
 
     entries_inserted_total = 0
+    page_counter: dict[str, int] = {"pages": 0}
 
     def bump_rejection(reason: str) -> None:
         rejection_reasons[reason] += 1
@@ -524,15 +657,50 @@ def run_bucket_shadow_scan_persisted(
 
         def market_iter() -> Iterator[dict[str, Any]]:
             seen: set[str] = set()
-            for st in ACTIVE_MARKET_STATUSES:
-                if not hasattr(client, "iter_markets"):
-                    raise AttributeError("client must provide iter_markets(limit=..., status=...)")
-                for m in client.iter_markets(limit=200, status=st):
-                    if isinstance(m, dict):
-                        tid = str(m.get("ticker") or "").strip()
-                        if tid and tid not in seen:
-                            seen.add(tid)
-                            yield m
+            getter = getattr(client, "get_markets", None)
+            iter_fn = getattr(client, "iter_markets", None)
+            if getter is not None:
+                for st in ACTIVE_MARKET_STATUSES:
+                    cursor: str | None = None
+                    pages = 0
+                    while True:
+                        if (
+                            config.markets_max_pages_per_status is not None
+                            and pages >= config.markets_max_pages_per_status
+                        ):
+                            break
+                        page = _get_markets_page_with_retries(client, config, status=st, cursor=cursor)
+                        page_counter["pages"] += 1
+                        markets = page.get("markets") or []
+                        if not isinstance(markets, list):
+                            raise TypeError("markets page must contain a list under 'markets'")
+                        for row in markets:
+                            if isinstance(row, dict):
+                                tid = str(row.get("ticker") or "").strip()
+                                if tid and tid not in seen:
+                                    seen.add(tid)
+                                    yield row
+                        cursor = page.get("cursor")
+                        pages += 1
+                        if float(config.markets_sleep_seconds_between_pages) > 0:
+                            time.sleep(float(config.markets_sleep_seconds_between_pages))
+                        if not cursor:
+                            break
+                return
+            if iter_fn is not None:
+                for st in ACTIVE_MARKET_STATUSES:
+                    for row in iter_fn(
+                        limit=int(config.markets_page_limit),
+                        status=st,
+                        max_pages=config.markets_max_pages_per_status,
+                    ):
+                        if isinstance(row, dict):
+                            tid = str(row.get("ticker") or "").strip()
+                            if tid and tid not in seen:
+                                seen.add(tid)
+                                yield row
+                return
+            raise AttributeError("client must provide get_markets or iter_markets for market listing")
 
         for market in market_iter():
             if config.max_markets_per_scan is not None and counts["markets_seen"] >= config.max_markets_per_scan:
@@ -616,7 +784,65 @@ def run_bucket_shadow_scan_persisted(
             yes_levels: list[tuple[int, int]] = []
             no_levels: list[tuple[int, int]] = []
 
+            def write_execution_probe(
+                bucket_price_cents: int,
+                fill_quality: str,
+                *,
+                contracts_requested: int = 0,
+                contracts_filled: int = 0,
+                contracts_unfilled: int = 0,
+                avg_no: float | None = None,
+                best_no: int | None = None,
+                worst_no: int | None = None,
+                gross_cost: int = 0,
+                fee_cents: int = 0,
+                slip: float | None = None,
+                eligible_depth: int | None = None,
+                skip_reason: str | None = None,
+                linked_entry_id: int | None = None,
+            ) -> None:
+                if config.dry_run or not config.persist_execution_probes:
+                    return
+                now_ts = datetime.now(timezone.utc)
+                upsert_shadow_execution_probe(
+                    session,
+                    {
+                        "scan_run_id": scan_run_id,
+                        "shadow_version": config.shadow_version,
+                        "experiment_name": config.experiment_name,
+                        "market_ticker": mt,
+                        "bucket_price_cents": bucket_price_cents,
+                        "observed_at": obs_at,
+                        "close_time": nm["close_time"],
+                        "seconds_to_close": sec_close,
+                        "event_ticker": nm["event_ticker"],
+                        "series_ticker": nm["series_ticker"],
+                        "category": nm["category"],
+                        "title": nm["title"],
+                        "contracts_requested": contracts_requested,
+                        "contracts_filled": contracts_filled,
+                        "contracts_unfilled": contracts_unfilled,
+                        "eligible_depth_contracts": eligible_depth,
+                        "avg_no_fill_cents": avg_no,
+                        "best_no_fill_cents": best_no,
+                        "worst_no_fill_cents": worst_no,
+                        "target_price_cents": bucket_price_cents,
+                        "entry_tolerance_cents": config.entry_tolerance_cents,
+                        "slippage_cents": slip,
+                        "fill_quality": fill_quality,
+                        "gross_cost_cents": gross_cost,
+                        "fee_cents": fee_cents,
+                        "skip_failure_reason": skip_reason,
+                        "linked_entry_id": linked_entry_id,
+                        "created_at": now_ts,
+                        "updated_at": now_ts,
+                    },
+                )
+
             if skip_book:
+                rsn = ob_row.last_rejection_reason or SECONDS_TO_CLOSE_TOO_LOW
+                for bp in config.bucket_prices_cents:
+                    write_execution_probe(bp, SKIPPED, skip_reason=str(rsn))
                 session.commit()
                 continue
 
@@ -647,6 +873,8 @@ def run_bucket_shadow_scan_persisted(
                         "updated_at": datetime.now(timezone.utc),
                     },
                 )
+                for bp in config.bucket_prices_cents:
+                    write_execution_probe(bp, API_ERROR, skip_reason=ORDERBOOK_FETCH_FAILED)
                 session.commit()
                 continue
 
@@ -668,8 +896,32 @@ def run_bucket_shadow_scan_persisted(
             yes_levels, no_levels = extract_orderbook_levels(raw_book)
             book_summary = summarize_book_for_no_entry(yes_levels, no_levels)
             implied = book_summary.get("implied_no_ask_best_cents")
-            if implied is None and not yes_levels:
+            ob_class, ob_detail = classify_yes_orderbook(raw_book, yes_levels)
+            if ob_class == INVALID_BOOK:
+                bump_rejection(INVALID_BOOK)
+                update_shadow_bucket_market_observation(
+                    session,
+                    ob_row,
+                    {
+                        "last_rejection_reason": INVALID_BOOK,
+                        "updated_at": datetime.now(timezone.utc),
+                    },
+                )
+                for bp in config.bucket_prices_cents:
+                    write_execution_probe(bp, INVALID_BOOK, skip_reason=ob_detail)
+                session.commit()
+                continue
+            if ob_class == EMPTY_BOOK:
                 bump_rejection(ORDERBOOK_EMPTY)
+                update_shadow_bucket_market_observation(
+                    session,
+                    ob_row,
+                    {"last_rejection_reason": ORDERBOOK_EMPTY, "updated_at": datetime.now(timezone.utc)},
+                )
+                for bp in config.bucket_prices_cents:
+                    write_execution_probe(bp, EMPTY_BOOK, skip_reason=ORDERBOOK_EMPTY)
+                session.commit()
+                continue
 
             # Observation rolling book stats
             extra_obs: dict[str, Any] = {
@@ -705,12 +957,15 @@ def run_bucket_shadow_scan_persisted(
 
             entered_buckets: list[int] = list(ob_row.entered_buckets_json or []) if isinstance(ob_row.entered_buckets_json, list) else []
 
+            fee_mult_series = config.effective_fee_multiplier_for_series(nm["series_ticker"])
+
             for bucket_price in config.bucket_prices_cents:
                 if (
                     config.max_entries_per_scan is not None
                     and entries_inserted_total >= config.max_entries_per_scan
                 ):
                     bump_rejection(MAX_ENTRIES_REACHED)
+                    write_execution_probe(bucket_price, SKIPPED, skip_reason=MAX_ENTRIES_REACHED)
                     update_shadow_bucket_market_observation(
                         session,
                         ob_row,
@@ -729,6 +984,7 @@ def run_bucket_shadow_scan_persisted(
                     bucket_price,
                 ):
                     bump_rejection(DUPLICATE_BUCKET_ENTRY)
+                    write_execution_probe(bucket_price, SKIPPED, skip_reason=DUPLICATE_BUCKET_ENTRY)
                     update_shadow_bucket_market_observation(
                         session,
                         ob_row,
@@ -743,6 +999,7 @@ def run_bucket_shadow_scan_persisted(
                 if contracts_requested <= 0:
                     bump_rejection(INVALID_STAKE_OR_BUCKET)
                     counts["fill_failures"] += 1
+                    write_execution_probe(bucket_price, SKIPPED, skip_reason=INVALID_STAKE_OR_BUCKET)
                     update_shadow_bucket_market_observation(
                         session,
                         ob_row,
@@ -753,11 +1010,22 @@ def run_bucket_shadow_scan_persisted(
                     )
                     continue
 
+                max_impl = bucket_price + int(config.entry_tolerance_cents)
                 sim = simulate_buy_no_fill_from_yes_bids(
                     yes_levels,
                     contracts_requested,
                     allow_partial_fills=config.allow_partial_fills,
+                    max_acceptable_implied_no_cents=max_impl,
                 )
+
+                cq = contracts_requested
+                probe_fee = 0
+                if sim.contracts_filled > 0 and sim.avg_no_fill_cents is not None:
+                    probe_fee = estimate_shadow_taker_fee_cents(
+                        sim.contracts_filled,
+                        sim.avg_no_fill_cents,
+                        fee_multiplier=fee_mult_series,
+                    )
 
                 acceptable = sim.fill_quality == FULL_FILL or (
                     config.allow_partial_fills and sim.fill_quality == PARTIAL_FILL
@@ -765,6 +1033,25 @@ def run_bucket_shadow_scan_persisted(
                 if not acceptable:
                     counts["fill_failures"] += 1
                     bump_rejection(INSUFFICIENT_DEPTH_REJ)
+                    write_execution_probe(
+                        bucket_price,
+                        sim.fill_quality,
+                        contracts_requested=cq,
+                        contracts_filled=sim.contracts_filled,
+                        contracts_unfilled=sim.contracts_unfilled,
+                        avg_no=sim.avg_no_fill_cents,
+                        best_no=sim.best_no_fill_cents,
+                        worst_no=sim.worst_no_fill_cents,
+                        gross_cost=int(sim.gross_cost_cents),
+                        fee_cents=probe_fee,
+                        slip=(
+                            float(sim.avg_no_fill_cents) - float(bucket_price)
+                            if sim.avg_no_fill_cents is not None
+                            else None
+                        ),
+                        eligible_depth=int(sim.eligible_depth_contracts),
+                        skip_reason=INSUFFICIENT_DEPTH_REJ,
+                    )
                     update_shadow_bucket_market_observation(
                         session,
                         ob_row,
@@ -783,6 +1070,25 @@ def run_bucket_shadow_scan_persisted(
                 if matched != bucket_price:
                     counts["fill_failures"] += 1
                     bump_rejection(AVG_FILL_OUTSIDE_BUCKET)
+                    write_execution_probe(
+                        bucket_price,
+                        sim.fill_quality,
+                        contracts_requested=cq,
+                        contracts_filled=sim.contracts_filled,
+                        contracts_unfilled=sim.contracts_unfilled,
+                        avg_no=sim.avg_no_fill_cents,
+                        best_no=sim.best_no_fill_cents,
+                        worst_no=sim.worst_no_fill_cents,
+                        gross_cost=int(sim.gross_cost_cents),
+                        fee_cents=probe_fee,
+                        slip=(
+                            float(sim.avg_no_fill_cents) - float(bucket_price)
+                            if sim.avg_no_fill_cents is not None
+                            else None
+                        ),
+                        eligible_depth=int(sim.eligible_depth_contracts),
+                        skip_reason=AVG_FILL_OUTSIDE_BUCKET,
+                    )
                     update_shadow_bucket_market_observation(
                         session,
                         ob_row,
@@ -794,14 +1100,22 @@ def run_bucket_shadow_scan_persisted(
                     continue
 
                 avg_fill = float(sim.avg_no_fill_cents or 0.0)
-                fee_cents = estimate_kalshi_taker_fee_cents(sim.contracts_filled, avg_fill)
-                gross_cost = sim.gross_cost_cents
+                fee_cents = estimate_shadow_taker_fee_cents(
+                    sim.contracts_filled,
+                    avg_fill,
+                    fee_multiplier=fee_mult_series,
+                )
+                gross_cost = int(sim.gross_cost_cents)
                 net_cost = gross_cost + fee_cents
                 slip = avg_fill - float(bucket_price)
                 dbg = _bound_debug_payload(
-                    {"levels_used": [dict(x) for x in sim.levels_used]},
+                    {"levels_used": [dict(x) for x in sim.levels_used], "fee_multiplier": fee_mult_series},
                     config.raw_debug_max_chars,
                 )
+                exec_notes = {
+                    "fee_model": "local_kalshi_taker_estimate_with_multiplier",
+                    "fee_multiplier": fee_mult_series,
+                }
 
                 entry_payload = {
                     "shadow_version": config.shadow_version,
@@ -821,8 +1135,11 @@ def run_bucket_shadow_scan_persisted(
                     "no_spread_cents": book_summary.get("no_spread_cents"),
                     "contracts_requested": contracts_requested,
                     "contracts_filled": sim.contracts_filled,
+                    "contracts_unfilled": sim.contracts_unfilled,
                     "simulated_avg_no_fill_cents": avg_fill,
                     "simulated_worst_no_fill_cents": sim.worst_no_fill_cents,
+                    "eligible_depth_contracts": sim.eligible_depth_contracts,
+                    "best_no_fill_cents": sim.best_no_fill_cents,
                     "target_price_cents": bucket_price,
                     "entry_tolerance_cents": config.entry_tolerance_cents,
                     "slippage_cents": slip,
@@ -831,18 +1148,52 @@ def run_bucket_shadow_scan_persisted(
                     "gross_cost_cents": gross_cost,
                     "fee_cents": fee_cents,
                     "net_cost_cents": net_cost,
+                    "execution_notes_json": exec_notes,
                     "raw_debug_json": dbg,
                     "scored": False,
                     "created_at": datetime.now(timezone.utc),
                     "updated_at": datetime.now(timezone.utc),
                 }
 
+                linked_id: int | None = None
                 if not config.dry_run:
                     ins = insert_shadow_bucket_entry(session, entry_payload)
                     if ins is None:
                         bump_rejection(DUPLICATE_BUCKET_ENTRY)
+                        write_execution_probe(
+                            bucket_price,
+                            SKIPPED,
+                            contracts_requested=cq,
+                            contracts_filled=sim.contracts_filled,
+                            contracts_unfilled=sim.contracts_unfilled,
+                            avg_no=sim.avg_no_fill_cents,
+                            best_no=sim.best_no_fill_cents,
+                            worst_no=sim.worst_no_fill_cents,
+                            gross_cost=gross_cost,
+                            fee_cents=fee_cents,
+                            slip=slip,
+                            eligible_depth=int(sim.eligible_depth_contracts),
+                            skip_reason=DUPLICATE_BUCKET_ENTRY,
+                        )
                         continue
                     counts["entries_inserted"] += 1
+                    linked_id = int(ins.id)
+
+                write_execution_probe(
+                    bucket_price,
+                    sim.fill_quality,
+                    contracts_requested=cq,
+                    contracts_filled=sim.contracts_filled,
+                    contracts_unfilled=sim.contracts_unfilled,
+                    avg_no=sim.avg_no_fill_cents,
+                    best_no=sim.best_no_fill_cents,
+                    worst_no=sim.worst_no_fill_cents,
+                    gross_cost=gross_cost,
+                    fee_cents=fee_cents,
+                    slip=slip,
+                    eligible_depth=int(sim.eligible_depth_contracts),
+                    linked_entry_id=linked_id,
+                )
 
                 entries_inserted_total += 1
                 if not config.dry_run:
@@ -874,6 +1225,7 @@ def run_bucket_shadow_scan_persisted(
                 "entries_inserted": counts["entries_inserted"],
                 "entries_by_bucket": dict(entries_by_bucket),
                 "fill_failures": counts["fill_failures"],
+                "markets_listing_pages_fetched": int(page_counter["pages"]),
                 "top_rejection_reasons": dict(rejection_reasons.most_common(50)),
                 "finished_at": finished.isoformat(),
             }
@@ -906,12 +1258,14 @@ def run_bucket_shadow_scan_persisted(
 
 __all__ = [
     "ACTIVE_MARKET_STATUSES",
+    "API_ERROR",
     "AVG_FILL_OUTSIDE_BUCKET",
     "DUPLICATE_BUCKET_ENTRY",
     "EMPTY_BOOK",
     "FULL_FILL",
     "INSUFFICIENT_DEPTH",
     "INSUFFICIENT_DEPTH_REJ",
+    "INVALID_BOOK",
     "INVALID_STAKE_OR_BUCKET",
     "MALFORMED_BOOK",
     "MARKET_MALFORMED",
@@ -921,16 +1275,20 @@ __all__ = [
     "PARTIAL_FILL",
     "SECONDS_TO_CLOSE_TOO_HIGH",
     "SECONDS_TO_CLOSE_TOO_LOW",
+    "SKIPPED",
     "FillSimulation",
     "bucket_for_fill",
     "buckets_for_fill",
+    "classify_yes_orderbook",
     "compute_fee_adjusted_break_even_win_rate",
     "compute_seconds_to_close",
     "estimate_kalshi_taker_fee_cents",
+    "estimate_shadow_taker_fee_cents",
     "extract_orderbook_levels",
     "normalize_market_for_shadow",
     "run_bucket_shadow_scan_persisted",
     "simulate_buy_no_fill_from_yes_bids",
     "summarize_book_for_no_entry",
+    "unwrap_orderbook_dict",
     "validate_bucket_windows",
 ]

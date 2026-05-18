@@ -54,8 +54,8 @@ This repository is **v0.16.0**. **v0.16** adds a **read-only connectivity diagno
 - `src/kalshi_no_carry/collectors/` — `events.py`, `markets.py`, `orderbooks.py`, **`market_lifecycle.py`**, `common.py`
 - `src/kalshi_no_carry/diagnostics/` — **`kalshi_connectivity.py`** (read-only live API connectivity JSON diagnostics)
 - `src/kalshi_no_carry/db/` — schema + repositories
-- `src/kalshi_no_carry/research/` — clustering, splits, **`features.py`**, **`feature_dataset.py`**, **`orderbook_audit.py`**, **`collection_coverage.py`**, **`outcomes.py`**, **`dataset_audit.py`**, **`pipeline_runner.py`**, **`reporting.py`**, **`backtest_config.py`**, **`backtest_no_carry.py`**, **`shadow_bucket_config.py`**, **`shadow_bucket_experiment.py`**, **`score_shadow_buckets.py`**, **`shadow_bucket_reporting.py`**, `build_splits.py`
-- `scripts/` — collectors, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`audit_orderbook_prices.py`**, **`audit_collection_coverage.py`**, **`check_kalshi_connectivity.py`**, **`refresh_market_lifecycle.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, **`run_backtest.py`**, **`run_shadow_bucket_scan.py`**, **`score_shadow_bucket_entries.py`**, **`run_shadow_bucket_report.py`**, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
+- `src/kalshi_no_carry/research/` — clustering, splits, **`features.py`**, **`feature_dataset.py`**, **`orderbook_audit.py`**, **`collection_coverage.py`**, **`outcomes.py`**, **`dataset_audit.py`**, **`pipeline_runner.py`**, **`reporting.py`**, **`backtest_config.py`**, **`backtest_no_carry.py`**, **`shadow_bucket_config.py`**, **`shadow_bucket_experiment.py`**, **`score_shadow_buckets.py`**, **`shadow_bucket_reporting.py`**, **`shadow_bucket_dashboard.py`**, `build_splits.py`
+- `scripts/` — collectors, `build_splits.py`, **`build_labels.py`**, **`build_features.py`**, **`audit_research_dataset.py`**, **`audit_orderbook_prices.py`**, **`audit_collection_coverage.py`**, **`check_kalshi_connectivity.py`**, **`refresh_market_lifecycle.py`**, **`run_research_pipeline.py`**, **`run_research_report.py`**, **`run_backtest.py`**, **`run_shadow_bucket_scan.py`**, **`score_shadow_bucket_entries.py`**, **`run_shadow_bucket_report.py`**, **`run_shadow_bucket_dashboard.py`**, `init_db.py`, `db_migrate.py`, `db_revision.py`, …
 - `alembic/` — versioned DDL (see [Database setup](#database-setup))
 - `tests/` — fakes + SQLite in-memory (**no live Kalshi or Postgres required** for default pytest)
 
@@ -126,7 +126,7 @@ Requires **`DATABASE_URL`**. This runs **`alembic upgrade head`**. The Alembic e
 
 **`create_all` vs migrations:** `create_all_tables()` only creates missing tables from the **current** ORM metadata. It will **not** migrate an older physical schema. Use **`create_all`** only for **quick empty DB / test bootstraps**. For databases with data you care about, use **Alembic** (`scripts/db_migrate.py`).
 
-**Frozen revisions:** committed Alembic files under `alembic/versions/` are **version-controlled, explicit DDL**. Baseline **`0001`** … **`0005_shadow_bucket_experiment`** (NO bucket shadow tables) are explicit migrations.
+**Frozen revisions:** committed Alembic files under `alembic/versions/` are **version-controlled, explicit DDL**. Baseline **`0001`** … **`0006_shadow_bucket_dashboard_execution`** (probe rows + richer entry diagnostics) extend the **`0005_shadow_bucket_experiment`** shadow tables migration.
 
 **New revisions:** after editing ORM models, generate a migration (review the file before committing):
 
@@ -408,6 +408,22 @@ python scripts/run_shadow_bucket_scan.py --bucket-prices-cents 60,70,80,85,90,95
 python scripts/score_shadow_bucket_entries.py --shadow-version v0.17a_no_bucket_shadow_experiment
 
 python scripts/run_shadow_bucket_report.py --shadow-version v0.17a_no_bucket_shadow_experiment --report-name no-bucket-shadow-v0.17a
+
+**v0.18 all-market dashboard (public-safe static site):**
+
+- Recommended identifiers: **`v0.18_all_market_bucket_dashboard`** + experiment **`all_market_bucket_dashboard_v0`** — still read-only (**markets** + **orderbooks** GETs); **no orders / portfolio**.
+- Migrate first (adds execution probe rows + richer entry diagnostics): revision **`0006_shadow_bucket_dashboard_execution`**.
+- After scanning + scoring, publish HTML/JSON/CSV:
+
+```bash
+python scripts/run_shadow_bucket_dashboard.py \
+  --shadow-version v0.18_all_market_bucket_dashboard \
+  --experiment-name all_market_bucket_dashboard_v0 \
+  --output-dir reports/shadow_dashboard/latest \
+  --overwrite
+```
+
+Optional: serve those artifacts privately over HTTPS using **`deploy/dashboard/`** (DuckDNS + Caddy templates + systemd timer). DNS alone is **not** access control — see **[README](deploy/dashboard/README_DUCKDNS_DASHBOARD.md)** for TLS + firewall guidance.
 ```
 
 **Storage:** scanner persists **compact** `shadow_bucket_entries` + `shadow_bucket_market_observations` rows only (no full raw orderbook snapshots). `raw_debug_json` is **truncated** to the configured max character budget.

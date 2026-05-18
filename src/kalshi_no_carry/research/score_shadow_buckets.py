@@ -197,11 +197,15 @@ def score_shadow_bucket_entries(
     shadow_version: str,
     *,
     label_version: str | None = None,
+    experiment_name: str | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    entries = fetch_unscored_shadow_bucket_entries(session, shadow_version, limit=limit)
+    entries = fetch_unscored_shadow_bucket_entries(
+        session, shadow_version, experiment_name=experiment_name, limit=limit
+    )
     summary: dict[str, Any] = {
         "shadow_version": shadow_version,
+        "experiment_name": experiment_name,
         "label_version": label_version,
         "entries_considered": len(entries),
         "entries_scored": 0,

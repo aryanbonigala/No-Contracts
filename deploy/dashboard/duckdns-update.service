@@ -1,0 +1,14 @@
+[Unit]
+Description=Kalshi shadow dashboard DuckDNS updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/kalshi-no-carry/duckdns.env
+ExecStart=/usr/local/bin/kalshi-duckdns-update.sh
+User=nobody
+Group=nogroup
+
+[Install]
+WantedBy=multi-user.target

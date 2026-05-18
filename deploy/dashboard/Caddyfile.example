@@ -1,0 +1,32 @@
+# Serve the static dashboard only (research outputs — no Kalshi secrets on this disk path).
+#
+# Replace `your-subdomain.duckdns.org` with your DuckDNS hostname.
+#
+# HTTPS is obtained automatically via Caddy (Let's Encrypt staging/prod defaults).
+#
+# Generate a bcrypt hash for Basic Auth:
+#   caddy hash-password
+# Paste ONLY the bcrypt line into the placeholder below — never commit real hashes with real passwords.
+#
+your-subdomain.duckdns.org {
+    root * /var/lib/kalshi-no-carry/reports/shadow_dashboard/latest
+    file_server
+
+    encode zstd gzip
+
+    basic_auth {
+        # Username is arbitrary ("viewer"); password is hashed offline with `caddy hash-password`.
+        viewer $2a$14$REPLACE_WITH_OUTPUT_OF_caddy_hash-password
+    }
+
+    header / {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+    }
+
+    log {
+        output discard
+        # switch to stdout on a hardened internal host without log shipping
+    }
+}

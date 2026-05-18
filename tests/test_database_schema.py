@@ -32,6 +32,7 @@ EXPECTED_TABLES = frozenset(
         "backtest_trades",
         "shadow_bucket_scan_runs",
         "shadow_bucket_entries",
+        "shadow_bucket_execution_probes",
         "shadow_bucket_market_observations",
     }
 )
